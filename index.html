@@ -3260,5 +3260,15 @@ const globalConfig = {
         }
     });
     </script>
+    <script>
+  const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  if (!isMobile) {
+    document.body.innerHTML = `
+      <h2>Acesso permitido apenas via celular 📱</h2>
+    `;
+  }
+</script>
+
 </body>
 </html>
