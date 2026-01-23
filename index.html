@@ -3261,18 +3261,33 @@ const globalConfig = {
     });
     </script>
 <script>
-  document.addEventListener("keydown", function (e) {
-    if (
-      e.key === "F12" ||
-      (e.ctrlKey && e.shiftKey && ["I", "C", "J"].includes(e.key)) ||
-      (e.ctrlKey && e.key === "U")
-    ) {
-      e.preventDefault()
-      return false
-    }
-  })
+ <script>
+document.addEventListener("keydown", function (e) {
+  // F12
+  if (e.key === "F12") {
+    e.preventDefault();
+    return false;
+  }
 
-  document.addEventListener("contextmenu", e => e.preventDefault())
+  // Ctrl + Shift + I / C / J
+  if (e.ctrlKey && e.shiftKey && ["I", "C", "J"].includes(e.key)) {
+    e.preventDefault();
+    return false;
+  }
+
+  // Ctrl + U
+  if (e.ctrlKey && e.key.toLowerCase() === "u") {
+    e.preventDefault();
+    return false;
+  }
+});
+
+// Botão direito
+document.addEventListener("contextmenu", function (e) {
+  e.preventDefault();
+});
+</script>
+
 </script>
 
 </body>
