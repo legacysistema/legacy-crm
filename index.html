@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Legacy CRM - Enterprise 360 (v6.0 Premium) - Autenticado</title>
+    <title>RC Sistemas CRM - Enterprise 360 (v6.0 Premium) - Autenticado</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -767,7 +767,7 @@
     <div id="supabase-login-overlay">
         <div class="login-card">
             <div class="login-logo"><i class="fas fa-chart-line"></i></div>
-            <h1 class="login-title">Legacy CRM</h1>
+            <h1 class="login-title">RC Sistemas CRM</h1>
             <p class="login-subtitle">Enterprise Edition 360</p>
             
             <div class="login-form-group">
@@ -803,7 +803,7 @@
         </div>
 
         <div class="intro-content">
-            <h1 class="intro-title">Legacy CRM</h1>
+            <h1 class="intro-title">RC Sistemas CRM</h1>
             <p class="intro-subtitle">Enterprise Edition 360</p>
             
             <div class="loading-ring"></div>
@@ -813,7 +813,7 @@
 
     <aside>
         <div class="brand">
-            <h2>Legacy CRM</h2>
+            <h2>RC Sistemas</h2>
             <span>Enterprise Edition</span>
         </div>
         <nav>
@@ -1305,28 +1305,6 @@
                             <i class="fas fa-save"></i> Salvar Personalização
                         </button>
                     </div>
-              </div>
-            </div>
-
-            <div class="card" style="margin-top: 20px; border-top: 4px solid var(--warning);">
-                <h3 style="display:flex; align-items:center; gap:10px;"><i class="fas fa-database"></i> Backup & Restauração de Dados</h3>
-                <p style="color:var(--text-muted); margin-bottom:15px; font-size: 0.9rem;">
-                    Exporte todos os dados do sistema (Clientes, Financeiro, Estoque, etc.) para um arquivo JSON seguro.
-                    Utilize o botão "Restaurar" para carregar um arquivo previamente salvo.
-                </p>
-                <div style="display:flex; gap:15px; flex-wrap:wrap;">
-                    <button class="btn btn-primary" onclick="backupManager.exportData()">
-                        <i class="fas fa-download"></i> Baixar Backup Completo
-                    </button>
-                    <div style="display:flex; align-items:center; gap:10px;">
-                        <button class="btn btn-outline" onclick="document.getElementById('restore-file-input').click()">
-                            <i class="fas fa-upload"></i> Restaurar Arquivo
-                        </button>
-                        <input type="file" id="restore-file-input" style="display:none" accept=".json" onchange="backupManager.importData(this)">
-                    </div>
-                </div>
-                <p id="backup-status" style="margin-top:10px; font-size:0.8rem; color:var(--text-muted);"></p>
-            </div>
                 </div>
             </div>
         </section>
@@ -2170,95 +2148,7 @@
             }
         }
         const db = new DB();
-      // --- BACKUP MANAGER (NOVO RECURSO IMPLEMENTADO) ---
-        const backupManager = {
-            exportData: async () => {
-                try {
-                    const stores = ['contacts', 'albums', 'opps', 'products', 'movements', 'events', 'eventTypes', 'visitTypes', 'transactions', 'customReports'];
-                    const backupData = {
-                        timestamp: new Date().toISOString(),
-                        version: '6.0',
-                        data: {}
-                    };
-                    
-                    document.getElementById('backup-status').innerText = "Gerando arquivo de backup...";
 
-                    for (const store of stores) {
-                        backupData.data[store] = await db.getAll(store);
-                    }
-
-                    // Salvar configurações do localStorage também
-                    backupData.localStorage = {
-                        'dashboardSettings': localStorage.getItem('dashboardSettings'),
-                        'rc_global_config': localStorage.getItem('rc_global_config'),
-                        'projectTypes': localStorage.getItem('projectTypes'),
-                        'waTemplates': localStorage.getItem('waTemplates')
-                    };
-
-                    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(backupData));
-                    const downloadAnchorNode = document.createElement('a');
-                    downloadAnchorNode.setAttribute("href", dataStr);
-                    downloadAnchorNode.setAttribute("download", "backup_crm_rc_" + new Date().toISOString().slice(0,10) + ".json");
-                    document.body.appendChild(downloadAnchorNode);
-                    downloadAnchorNode.click();
-                    downloadAnchorNode.remove();
-
-                    document.getElementById('backup-status').innerText = "Backup baixado com sucesso!";
-                    setTimeout(() => document.getElementById('backup-status').innerText = "", 3000);
-
-                } catch (e) {
-                    alert("Erro ao exportar dados: " + e.message);
-                }
-            },
-
-            importData: async (input) => {
-                const file = input.files[0];
-                if (!file) return;
-
-                if (!confirm("ATENÇÃO: Isso irá adicionar/sobrescrever dados no sistema atual. Recomenda-se fazer um backup antes. Continuar?")) {
-                    input.value = '';
-                    return;
-                }
-
-                const reader = new FileReader();
-                document.getElementById('backup-status').innerText = "Lendo arquivo...";
-
-                reader.onload = async (e) => {
-                    try {
-                        const json = JSON.parse(e.target.result);
-                        
-                        if (!json.data) throw new Error("Arquivo de backup inválido.");
-
-                        // Restaurar IndexedDB
-                        for (const storeName in json.data) {
-                            const items = json.data[storeName];
-                            if (Array.isArray(items)) {
-                                for (const item of items) {
-                                    await db.put(storeName, item);
-                                }
-                            }
-                        }
-
-                        // Restaurar LocalStorage
-                        if (json.localStorage) {
-                            for (const key in json.localStorage) {
-                                if (json.localStorage[key]) {
-                                    localStorage.setItem(key, json.localStorage[key]);
-                                }
-                            }
-                        }
-
-                        alert("Dados restaurados com sucesso! O sistema será recarregado.");
-                        window.location.reload();
-
-                    } catch (err) {
-                        alert("Erro ao processar backup: " + err.message);
-                        document.getElementById('backup-status').innerText = "Erro na restauração.";
-                    }
-                };
-                reader.readAsText(file);
-            }
-        };
         // --- QUOTE MANAGER (PREMIUM) ---
         const quoteManager = {
             state: {
@@ -2434,7 +2324,7 @@
                             </div>
                         </div>
                         <div class="q-footer">
-                            Documento gerado digitalmente por Legacy CRM Enterprise.
+                            Documento gerado digitalmente por RC Sistemas CRM Enterprise.
                         </div>
                     `;
                 }
@@ -2631,7 +2521,7 @@
 
         // --- MSG MANAGER ---
         const msgManager = {
-            templates: [ { id: 1, title: 'Boas Vindas', text: 'Olá [Nome], seja bem-vindo à Legacy! Como podemos ajudar?' }, { id: 2, title: 'Confirmação Agenda', text: 'Olá [Nome], confirmando nosso agendamento para [Data] às [Hora]. O endereço é [Endereco].' }, { id: 3, title: 'Cobrança Financeira', text: 'Olá [Nome], segue lembrete sobre o pagamento restante de R$ [Restante] referente ao serviço total de R$ [Total].' } ],
+            templates: [ { id: 1, title: 'Boas Vindas', text: 'Olá [Nome], seja bem-vindo à RC Sistemas! Como podemos ajudar?' }, { id: 2, title: 'Confirmação Agenda', text: 'Olá [Nome], confirmando nosso agendamento para [Data] às [Hora]. O endereço é [Endereco].' }, { id: 3, title: 'Cobrança Financeira', text: 'Olá [Nome], segue lembrete sobre o pagamento restante de R$ [Restante] referente ao serviço total de R$ [Total].' } ],
             contacts: [], viewMode: 'contacts', activeChatContact: null,
             init: () => { const saved = localStorage.getItem('waTemplates'); if(saved) msgManager.templates = JSON.parse(saved); },
             openModal: async () => { document.getElementById('whatsapp-modal').style.display = 'flex'; msgManager.contacts = await db.getAll('contacts'); msgManager.switchView('contacts'); },
@@ -3260,15 +3150,5 @@ const globalConfig = {
         }
     });
     </script>
-<script>
-  if (window.innerWidth > 768) {
-    document.body.innerHTML = `
-      <h2>Este conteúdo está disponível apenas em dispositivos móveis 📱</h2>
-    `;
-  }
-</script>
-
-</script>
-
 </body>
 </html>
