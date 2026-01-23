@@ -3260,33 +3260,5 @@ const globalConfig = {
         }
     });
     </script>
-document.addEventListener("keydown", function (e) {
-  // F12
-  if (e.key === "F12") {
-    e.preventDefault();
-    return false;
-  }
-
-  // Ctrl + Shift + I / C / J
-  if (e.ctrlKey && e.shiftKey && ["I", "C", "J"].includes(e.key)) {
-    e.preventDefault();
-    return false;
-  }
-
-  // Ctrl + U
-  if (e.ctrlKey && e.key.toLowerCase() === "u") {
-    e.preventDefault();
-    return false;
-  }
-});
-
-// Botão direito
-document.addEventListener("contextmenu", function (e) {
-  e.preventDefault();
-});
-</script>
-
-</script>
-
 </body>
 </html>
