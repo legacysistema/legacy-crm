@@ -3260,5 +3260,20 @@ const globalConfig = {
         }
     });
     </script>
+<script>
+  document.addEventListener("keydown", function (e) {
+    if (
+      e.key === "F12" ||
+      (e.ctrlKey && e.shiftKey && ["I", "C", "J"].includes(e.key)) ||
+      (e.ctrlKey && e.key === "U")
+    ) {
+      e.preventDefault()
+      return false
+    }
+  })
+
+  document.addEventListener("contextmenu", e => e.preventDefault())
+</script>
+
 </body>
 </html>
