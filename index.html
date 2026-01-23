@@ -3260,14 +3260,14 @@ const globalConfig = {
         }
     });
     </script>
-    <script>
-  const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-
-  if (!isMobile) {
+<script>
+  if (window.innerWidth > 768) {
     document.body.innerHTML = `
-      <h2>Acesso permitido apenas via celular 📱</h2>
+      <h2>Este conteúdo está disponível apenas em dispositivos móveis 📱</h2>
     `;
   }
+</script>
+
 </script>
 
 </body>
