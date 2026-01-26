@@ -2017,14 +2017,20 @@
     </div>
   
 <script>
-        // =========================================================================
+// =========================================================================
         // CONFIGURAÇÃO SUPABASE & AUTENTICAÇÃO
         // =========================================================================
         const SUPABASE_URL = 'https://etgmkhpcjqffmpsaviys.supabase.co';
         const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0Z21raHBjanFmZm1wc2F2aXlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkwMjgyODIsImV4cCI6MjA4NDYwNDI4Mn0.l3GK2WH0q33XXiKYlpoywxuSJ5mYxOhdYF34FcEVxuI';
         
         // Inicializa Cliente
-        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        window.supabaseClient = supabase.createClient (SUPABASE_URL, SUPABASE_KEY);
+       
+         
+        
+       let lastSyncAt = Number(localStorage.getItem('lastSyncAt')) || 0;
+       const SYNC_INTERVAL = 60 * 1000; // 1 minuto 
+
 
         const authManager = {
             // Verifica sessão atual ao carregar
@@ -2105,6 +2111,7 @@
 
         // Inicia verificação de Auth imediatamente
         authManager.init();
+        
 
         // =========================================================================
         // LÓGICA ORIGINAL DO SISTEMA (INTACTA)
@@ -3260,5 +3267,162 @@ const globalConfig = {
         }
     });
     </script>
+<script>
+async function exportIndexedDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('RCSistemasDB');
+
+    request.onsuccess = () => {
+      const db = request.result;
+      const stores = Array.from(db.objectStoreNames);
+      const result = [];
+      let pending = stores.length;
+
+      stores.forEach(storeName => {
+        const tx = db.transaction(storeName, 'readonly');
+        const store = tx.objectStore(storeName);
+        const getAll = store.getAll();
+
+        getAll.onsuccess = () => {
+          getAll.result.forEach(item => {
+            result.push({
+              id: `${storeName}_${item.id}`, // 👈 AQUI
+              entity: storeName,
+              data: item
+            });
+          });
+
+          pending--;
+          if (pending === 0) resolve(result);
+        };
+      });
+    };
+
+    request.onerror = reject;
+  });
+}
+</script>
+
+<script>
+<script>
+
+async function syncIndexedDBToSupabase() {
+    try {
+        // 1. Abrir IndexedDB
+        // 2. Ler dados locais
+        // 3. Enviar para o Supabase usando supabase.from('tabela').insert()
+        console.log("Sincronização iniciada...");
+    } catch (error) {
+        console.error("Erro na sincronização:", error);
+    }
+}
+
+async function syncIndexedDBToSupabase() {
+  // CORREÇÃO 1: Usar 'window.supabaseClient' (definido na linha 1766) em vez de 'supabase'
+  if (!window.supabaseClient) return; 
+
+  const { data: { user } } = await window.supabaseClient.auth.getUser();
+  
+  if (!user) {
+    // Usuário não logado, não faz nada
+    return;
+  }
+
+  try {
+      // Garante que a função exportIndexedDB existe antes de chamar
+      if (typeof exportIndexedDB !== 'function') return;
+
+      const records = await exportIndexedDB();
+
+      // Se não houver dados, para por aqui
+      if (!records || records.length === 0) return;
+
+      const payload = records.map(r => ({
+        id: r.id,
+        user_id: user.id,
+        entity: r.entity,
+        data: r.data,
+        updated_at: new Date()
+      }));
+
+      // CORREÇÃO 2: Usar 'window.supabaseClient' para o upsert
+      const { error } = await window.supabaseClient
+        .from('client_data')
+        .upsert(payload);
+
+      if (error) {
+        console.error('Erro ao sincronizar com Supabase:', error);
+      } else {
+        console.log('✔️ Backup Cloud Realizado:', payload.length, 'registros');
+      }
+  } catch (err) {
+      console.error("Erro interno na sincronização:", err);
+  }
+}
+
+// CORREÇÃO 3: O setInterval deve ficar FORA da função para evitar loop infinito
+// CORREÇÃO 4: Corrigido o nome da função (adicionado o 'To' que faltava)
+setInterval(() => {
+    syncIndexedDBToSupabase();
+}, 60000); // Executa a cada 60 segundos
+</script>
+
+</script>
+<script>
+async function syncIndexedDBToSupabase() {
+  try {
+    if (!window.supabaseClient) {
+      console.error('❌ SupabaseClient não inicializado')
+      return
+    }
+
+    if (typeof exportIndexedDB !== 'function') {
+      console.error('❌ Função exportIndexedDB() não encontrada')
+      return
+    }
+
+    const { data, error } = await supabaseClient.auth.getUser()
+
+    if (error || !data?.user) {
+      console.warn('⚠️ Usuário não autenticado')
+      return
+    }
+
+    const user = data.user
+
+    const records = await exportIndexedDB()
+
+    if (!Array.isArray(records) || records.length === 0) {
+      console.log('ℹ️ Nenhum dado no IndexedDB para sincronizar')
+      return
+    }
+
+    const payload = records.map(r => ({
+      id: `${r.entity}_${r.id}`,
+      user_id: user.id,
+      entity: r.entity,
+      data: r.data,
+      updated_at: new Date().toISOString()
+    }))
+
+    const { error: upsertError } = await supabaseClient
+      .from('client_data')
+      .upsert(payload, { onConflict: 'id' })
+
+    if (upsertError) {
+      console.error('❌ Erro ao sincronizar com Supabase:', upsertError)
+    } else {
+      console.log(`✔ Sincronização concluída com sucesso (${payload.length} registros)`)
+    }
+
+  } catch (err) {
+    console.error('🔥 Erro inesperado na sincronização:', err)
+  }
+}
+
+/* 🔓 expõe para testes no console */
+window.syncIndexedDBToSupabase = syncIndexedDBToSupabase
+</script>
+
 </body>
 </html>
