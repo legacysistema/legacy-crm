@@ -3304,86 +3304,49 @@ async function exportIndexedDB() {
 </script>
 
 <script>
-<script>
+ 
+        // Função de Sincronização Corrigida
+        async function syncIndexedDBToSupabase() {
+            // Usando o nome correto da variável que você definiu no início do arquivo
+            if (!window.supabaseClient) return; 
 
-async function syncIndexedDBToSupabase() {
-    try {
-        // 1. Abrir IndexedDB
-        // 2. Ler dados locais
-        // 3. Enviar para o Supabase usando supabase.from('tabela').insert()
-        console.log("Sincronização iniciada...");
-    } catch (error) {
-        console.error("Erro na sincronização:", error);
-    }
-}
+            try {
+                const { data: { user } } = await window.supabaseClient.auth.getUser();
+                
+                if (!user) return; // Só sincroniza se estiver logado
 
-async function syncIndexedDBToSupabase() {
-  // CORREÇÃO 1: Usar 'window.supabaseClient' (definido na linha 1766) em vez de 'supabase'
-  if (!window.supabaseClient) return; 
+                if (typeof exportIndexedDB !== 'function') return;
 
-  const { data: { user } } = await window.supabaseClient.auth.getUser();
-  
-  if (!user) {
-    // Usuário não logado, não faz nada
-    return;
-  }
+                const records = await exportIndexedDB();
+                if (!records || records.length === 0) return;
 
-  try {
-      // Garante que a função exportIndexedDB existe antes de chamar
-      if (typeof exportIndexedDB !== 'function') return;
+                const payload = records.map(r => ({
+                    id: r.id,
+                    user_id: user.id,
+                    entity: r.entity,
+                    data: r.data,
+                    updated_at: new Date()
+                }));
 
-      const records = await exportIndexedDB();
+                const { error } = await window.supabaseClient
+                    .from('client_data')
+                    .upsert(payload);
 
-      // Se não houver dados, para por aqui
-      if (!records || records.length === 0) return;
+                if (error) {
+                    console.error('Erro ao sincronizar:', error);
+                } else {
+                    console.log('✔️ Backup Cloud Realizado:', payload.length, 'registros');
+                }
+            } catch (err) {
+                console.error("Erro na sincronização:", err);
+            }
+        }
 
-      const payload = records.map(r => ({
-        id: r.id,
-        user_id: user.id,
-        entity: r.entity,
-        data: r.data,
-        updated_at: new Date()
-      }));
-
-      // CORREÇÃO 2: Usar 'window.supabaseClient' para o upsert
-      const { error } = await window.supabaseClient
-        .from('client_data')
-        .upsert(payload);
-
-      if (error) {
-        console.error('Erro ao sincronizar com Supabase:', error);
-      } else {
-        console.log('✔️ Backup Cloud Realizado:', payload.length, 'registros');
-      }
-  } catch (err) {
-      console.error("Erro interno na sincronização:", err);
-  }
-}
-
-// CORREÇÃO 3: O setInterval deve ficar FORA da função para evitar loop infinito
-// CORREÇÃO 4: Corrigido o nome da função (adicionado o 'To' que faltava)
-setInterval(() => {
-    syncIndexedDBToSupabase();
-}, 60000); // Executa a cada 60 segundos
-</script>
-
-<script>
-async function carregarDadosDaNuvem() {
-    const { data: { user } } = await window.supabaseClient.auth.getUser();
-    if (!user) return;
-
-    // Busca os dados do usuário no Supabase
-    const { data, error } = await window.supabaseClient
-        .from('client_data')
-        .select('*')
-        .eq('user_id', user.id);
-
-    if (data) {
-        // Lógica para pegar cada item e salvar no IndexedDB local
-        // Após salvar no IndexedDB, recarregar a interface
-        console.log("Dados recuperados da nuvem:", data.length);
-    }
-}
-</script>
+        // Inicia o intervalo de 60 segundos
+        setInterval(syncIndexedDBToSupabase, 60000);
+        
+        // Opcional: Executa uma vez assim que a página carrega
+        setTimeout(syncIndexedDBToSupabase, 5000); 
+    </script>
 </body>
 </html>
