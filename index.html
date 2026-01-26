@@ -3268,85 +3268,170 @@ const globalConfig = {
     });
     </script>
 <script>
-async function exportIndexedDB() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open('RCSistemasDB');
 
-    request.onsuccess = () => {
-      const db = request.result;
-      const stores = Array.from(db.objectStoreNames);
-      const result = [];
-      let pending = stores.length;
+  // 1. Função para ler tudo do IndexedDB
+  function exportIndexedDB() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('RCSistemasDB');
 
-      stores.forEach(storeName => {
-        const tx = db.transaction(storeName, 'readonly');
-        const store = tx.objectStore(storeName);
-        const getAll = store.getAll();
+      request.onerror = (event) => reject("Erro ao abrir DB: " + event.target.error);
 
-        getAll.onsuccess = () => {
-          getAll.result.forEach(item => {
-            result.push({
-              id: `${storeName}_${item.id}`, // 👈 AQUI
-              entity: storeName,
-              data: item
-            });
-          });
-
-          pending--;
-          if (pending === 0) resolve(result);
-        };
-      });
-    };
-
-    request.onerror = reject;
-  });
-}
-</script>
-
-<script>
- 
-        // Função de Sincronização Corrigida
-        async function syncIndexedDBToSupabase() {
-            // Usando o nome correto da variável que você definiu no início do arquivo
-            if (!window.supabaseClient) return; 
-
-            try {
-                const { data: { user } } = await window.supabaseClient.auth.getUser();
-                
-                if (!user) return; // Só sincroniza se estiver logado
-
-                if (typeof exportIndexedDB !== 'function') return;
-
-                const records = await exportIndexedDB();
-                if (!records || records.length === 0) return;
-
-                const payload = records.map(r => ({
-                    id: r.id,
-                    user_id: user.id,
-                    entity: r.entity,
-                    data: r.data,
-                    updated_at: new Date()
-                }));
-
-                const { error } = await window.supabaseClient
-                    .from('client_data')
-                    .upsert(payload);
-
-                if (error) {
-                    console.error('Erro ao sincronizar:', error);
-                } else {
-                    console.log('✔️ Backup Cloud Realizado:', payload.length, 'registros');
-                }
-            } catch (err) {
-                console.error("Erro na sincronização:", err);
-            }
+      request.onsuccess = (event) => {
+        const db = event.target.result;
+        // Se não houver stores, resolve vazio
+        if (db.objectStoreNames.length === 0) {
+            resolve([]);
+            return;
         }
 
-        // Inicia o intervalo de 60 segundos
-        setInterval(syncIndexedDBToSupabase, 60000);
-        
-        // Opcional: Executa uma vez assim que a página carrega
-        setTimeout(syncIndexedDBToSupabase, 5000); 
-    </script>
+        const stores = Array.from(db.objectStoreNames);
+        const result = [];
+        let pending = stores.length;
+
+        stores.forEach(storeName => {
+          const tx = db.transaction(storeName, 'readonly');
+          const store = tx.objectStore(storeName);
+          const getAll = store.getAll();
+
+          getAll.onsuccess = () => {
+            getAll.result.forEach(item => {
+              // Verifica se o item tem ID, senão usa timestamp ou ignora
+              const itemId = item.id || item.uuid || Date.now(); 
+              
+              result.push({
+                id: `${storeName}_${itemId}`, // ID único global para o Supabase
+                entity: storeName,            // Nome da tabela/store de origem
+                data: item                    // O objeto completo
+              });
+            });
+
+            pending--;
+            if (pending === 0) resolve(result);
+          };
+
+          getAll.onerror = () => {
+             pending--;
+             if (pending === 0) resolve(result);
+          };
+        });
+      };
+    });
+  }
+
+  // 2. Sincronizar (Upload): IndexedDB -> Supabase
+  async function syncIndexedDBToSupabase() {
+    if (!window.supabaseClient) {
+        console.warn('Supabase Client não inicializado.');
+        return;
+    }
+
+    try {
+      const { data: { user } } = await window.supabaseClient.auth.getUser();
+      if (!user) return; // Não faz backup se não estiver logado
+
+      // Pega os dados locais
+      const records = await exportIndexedDB();
+
+      if (!records || records.length === 0) return;
+
+      const payload = records.map(r => ({
+        id: r.id,
+        user_id: user.id,
+        entity: r.entity,
+        data: r.data,
+        updated_at: new Date()
+      }));
+
+      // Upsert no Supabase (Atualiza se existir, cria se não)
+      const { error } = await window.supabaseClient
+        .from('client_data')
+        .upsert(payload, { onConflict: 'id' }); 
+
+      if (error) {
+        console.error('Erro ao sincronizar com Supabase:', error);
+      } else {
+        console.log(`✔️ Backup Cloud Realizado: ${payload.length} registros sincronizados.`);
+      }
+    } catch (err) {
+      console.error("Erro interno na sincronização (Upload):", err);
+    }
+  }
+
+  // 3. Restaurar (Download): Supabase -> IndexedDB
+  async function carregarDadosDaNuvem() {
+    if (!window.supabaseClient) return;
+
+    try {
+        const { data: { user } } = await window.supabaseClient.auth.getUser();
+        if (!user) return;
+
+        // Busca dados da nuvem
+        const { data, error } = await window.supabaseClient
+            .from('client_data')
+            .select('*')
+            .eq('user_id', user.id);
+
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+            console.log(`📥 Baixando ${data.length} registros da nuvem...`);
+            
+            // Abre o IndexedDB para escrita
+            const request = indexedDB.open('RCSistemasDB');
+            
+            request.onsuccess = (event) => {
+                const db = event.target.result;
+                
+                // Agrupa dados por Store (Entidade) para otimizar transações
+                const dadosPorStore = {};
+                data.forEach(registro => {
+                    if (!dadosPorStore[registro.entity]) {
+                        dadosPorStore[registro.entity] = [];
+                    }
+                    dadosPorStore[registro.entity].push(registro.data);
+                });
+
+                // Itera sobre as stores e salva os dados
+                Object.keys(dadosPorStore).forEach(storeName => {
+                    if (db.objectStoreNames.contains(storeName)) {
+                        const tx = db.transaction(storeName, 'readwrite');
+                        const store = tx.objectStore(storeName);
+                        
+                        dadosPorStore[storeName].forEach(item => {
+                            // Tenta atualizar/inserir o item original
+                            store.put(item); 
+                        });
+                        
+                        tx.oncomplete = () => console.log(`✅ Restaurado: ${storeName}`);
+                        tx.onerror = (e) => console.error(`Erro ao restaurar ${storeName}`, e);
+                    } else {
+                        console.warn(`Store '${storeName}' não existe localmente.`);
+                    }
+                });
+            };
+        }
+    } catch (err) {
+        console.error("Erro ao carregar dados da nuvem:", err);
+    }
+  }
+
+  // --- Inicialização ---
+
+  // 1. Tenta carregar dados da nuvem ao iniciar (apenas uma vez)
+  // setTimeout garante que o supabaseClient já esteja carregado
+  setTimeout(() => {
+      carregarDadosDaNuvem();
+  }, 3000);
+
+  // 2. Inicia o loop de backup (IndexedDB -> Supabase) a cada 60s
+  setInterval(() => {
+    syncIndexedDBToSupabase();
+  }, 60000);
+
+
+</script>
+
+ 
 </body>
 </html>
+
