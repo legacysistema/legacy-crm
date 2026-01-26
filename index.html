@@ -3367,62 +3367,23 @@ setInterval(() => {
 }, 60000); // Executa a cada 60 segundos
 </script>
 
-</script>
 <script>
-async function syncIndexedDBToSupabase() {
-  try {
-    if (!window.supabaseClient) {
-      console.error('❌ SupabaseClient não inicializado')
-      return
+async function carregarDadosDaNuvem() {
+    const { data: { user } } = await window.supabaseClient.auth.getUser();
+    if (!user) return;
+
+    // Busca os dados do usuário no Supabase
+    const { data, error } = await window.supabaseClient
+        .from('client_data')
+        .select('*')
+        .eq('user_id', user.id);
+
+    if (data) {
+        // Lógica para pegar cada item e salvar no IndexedDB local
+        // Após salvar no IndexedDB, recarregar a interface
+        console.log("Dados recuperados da nuvem:", data.length);
     }
-
-    if (typeof exportIndexedDB !== 'function') {
-      console.error('❌ Função exportIndexedDB() não encontrada')
-      return
-    }
-
-    const { data, error } = await supabaseClient.auth.getUser()
-
-    if (error || !data?.user) {
-      console.warn('⚠️ Usuário não autenticado')
-      return
-    }
-
-    const user = data.user
-
-    const records = await exportIndexedDB()
-
-    if (!Array.isArray(records) || records.length === 0) {
-      console.log('ℹ️ Nenhum dado no IndexedDB para sincronizar')
-      return
-    }
-
-    const payload = records.map(r => ({
-      id: `${r.entity}_${r.id}`,
-      user_id: user.id,
-      entity: r.entity,
-      data: r.data,
-      updated_at: new Date().toISOString()
-    }))
-
-    const { error: upsertError } = await supabaseClient
-      .from('client_data')
-      .upsert(payload, { onConflict: 'id' })
-
-    if (upsertError) {
-      console.error('❌ Erro ao sincronizar com Supabase:', upsertError)
-    } else {
-      console.log(`✔ Sincronização concluída com sucesso (${payload.length} registros)`)
-    }
-
-  } catch (err) {
-    console.error('🔥 Erro inesperado na sincronização:', err)
-  }
 }
-
-/* 🔓 expõe para testes no console */
-window.syncIndexedDBToSupabase = syncIndexedDBToSupabase
 </script>
-
 </body>
 </html>
