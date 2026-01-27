@@ -3155,7 +3155,7 @@ async function apagarRegistro(storeName, itemId) {
         .select('*')
         .update({ deleted: true, updated_at: new Date() })
         .eq('id', recordId);
-        .eq('deleted', false)
+        
         
         
 
