@@ -3338,9 +3338,8 @@ const globalConfig = {
         id: r.id,
         user_id: user.id,
         entity: r.entity,
-        data: { ...r.data, deleted: r.data?.deleted === true },
-        deleted: r.data?.deleted === true,
-        updated_at: new Date().toISOString()
+        data: r.data,
+        updated_at: new Date()
       }));
 
       // Upsert no Supabase (Atualiza se existir, cria se não)
@@ -3398,14 +3397,17 @@ const globalConfig = {
                         const tx = db.transaction(storeName, 'readwrite');
                         const store = tx.objectStore(storeName);
                         
-                        dadosPorStore[storeName].forEach(item => {
-                            // Tenta atualizar/inserir o item original
-                            if(item.deleted === true){
-                            store.delete(item.id);
-                        } else {
-                            store.put(item);
-                        } 
-                        });
+                        ddadosPorStore[storeName].forEach(registro => {
+
+   const data = registro.data;
+
+   if (registro.deleted === true) {
+      store.delete(data.id);
+   } else {
+      store.put(data);
+   }
+
+});
                         
                         tx.oncomplete = () => console.log(`✅ Restaurado: ${storeName}`);
                         tx.onerror = (e) => console.error(`Erro ao restaurar ${storeName}`, e);
