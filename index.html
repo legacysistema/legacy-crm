@@ -3135,6 +3135,36 @@ function dbDelete(store, key) {
     });
 }
 
+async function apagarRegistro(storeName, itemId) {
+  // 1️⃣ Remove do IndexedDB (como já faz hoje)
+  const request = indexedDB.open('RCSistemasDB');
+
+  request.onsuccess = async (event) => {
+    const db = event.target.result;
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+
+    store.delete(itemId);
+
+    // 2️⃣ Marca como deletado no Supabase
+    const recordId = `${storeName}_${itemId}`;
+
+    if (window.supabaseClient) {
+      const { error } = await window.supabaseClient
+        .from('client_data')
+        .update({ deleted: true, updated_at: new Date() })
+        .eq('id', recordId);
+
+      if (error) {
+        console.error('Erro ao marcar delete no Supabase', error);
+      } else {
+        console.log('🗑️ Registro marcado como deletado na nuvem:', recordId);
+      }
+    }
+  };
+}
+
+
 /* ---------- MIGRAÇÃO AUTOMÁTICA ---------- */
 async function migrateLocalStorage() {
     for (let i = 0; i < localStorage.length; i++) {
