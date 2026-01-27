@@ -3403,7 +3403,7 @@ const globalConfig = {
             .from('client_data')
             .select('*')
             .eq('user_id', user.id);
-
+            .or('deleted.is.null,deleted.eq.false');
         if (error) throw error;
 
         if (data && data.length > 0) {
