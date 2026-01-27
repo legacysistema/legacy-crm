@@ -3152,9 +3152,11 @@ async function apagarRegistro(storeName, itemId) {
     if (window.supabaseClient) {
       const { error } = await window.supabaseClient
         .from('client_data')
+        .select('*')
         .update({ deleted: true, updated_at: new Date() })
         .eq('id', recordId);
-
+        .eq('deleted', false);
+        
       if (error) {
         console.error('Erro ao marcar delete no Supabase', error);
       } else {
