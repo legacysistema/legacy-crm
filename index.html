@@ -3338,8 +3338,9 @@ const globalConfig = {
         id: r.id,
         user_id: user.id,
         entity: r.entity,
-        data: r.data,
-        updated_at: new Date()
+        data: { ...r.data, deleted: r.data?.deleted === true },
+        deleted: r.data?.deleted === true,
+        updated_at: new Date().toISOString()
       }));
 
       // Upsert no Supabase (Atualiza se existir, cria se não)
@@ -3399,7 +3400,11 @@ const globalConfig = {
                         
                         dadosPorStore[storeName].forEach(item => {
                             // Tenta atualizar/inserir o item original
-                            store.put(item); 
+                            if(item.deleted === true){
+                            store.delete(item.id);
+                        } else {
+                            store.put(item);
+                        } 
                         });
                         
                         tx.oncomplete = () => console.log(`✅ Restaurado: ${storeName}`);
