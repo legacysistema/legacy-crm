@@ -3155,8 +3155,9 @@ async function apagarRegistro(storeName, itemId) {
         .select('*')
         .update({ deleted: true, updated_at: new Date() })
         .eq('id', recordId);
-        .eq('deleted', false);
         
+        
+
       if (error) {
         console.error('Erro ao marcar delete no Supabase', error);
       } else {
