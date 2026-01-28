@@ -3353,11 +3353,12 @@ async function syncIndexedDBToSupabase() {
         if (!records.length) return;
 
         const payload = records.map(r => ({
-            id: r.id,
-            user_id: user.id,
-            entity: r.entity,
-            data: r.data,
-            updated_at: new Date().toISOString()
+           id: crypto.randomUUID(),   // UUID REAL
+    user_id: user.id,
+    store_name: r.entity,      // ✔ corresponde à tabela
+    record_id: r.data.id,      // ✔ id original do IndexedDB
+    payload: r.data,           // ✔ jsonb
+    updated_at: new Date()
         }));
 
         const { error } = await window.supabaseClient
