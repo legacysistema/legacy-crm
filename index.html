@@ -3319,7 +3319,10 @@ const SyncEngine = {
     const user = (await supabaseClient.auth.getUser()).data.user;
     if (!user) return;
 
-    const lastSync = localStorage.getItem('last_sync') || '1970-01-01';
+   const lastSync =
+  localStorage.getItem('last_sync') ||
+  '1970-01-01T00:00:00Z';
+
 
     const { data } = await supabaseClient
       .from('clients_data')
@@ -3341,10 +3344,12 @@ const SyncEngine = {
     console.log('✔ PULL Supabase concluído');
   },
 
-  async sync() {
-    await this.pushToSupabase();
-    await this.pullFromSupabase();
-  }
+ async sync() {
+  await this.pushToSupabase();     // sobe meus dados
+  await this.pullFromSupabase();   // traz dados dos outros
+  localStorage.setItem('last_sync', new Date().toISOString());
+}
+
 };
 
 /* ---------- AUTO SYNC ---------- */
