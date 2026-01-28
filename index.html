@@ -3338,7 +3338,13 @@ const SyncEngine = {
 
       if (localHash === row.payload_hash) continue;
 
-      await db.put(row.store_name, row.payload);
+      const record = {
+  ...row.payload,
+  id: row.record_id   // 🔑 força o keyPath correto
+};
+
+await db.put(row.store_name, record);
+
     }
 
     console.log('✔ PULL Supabase concluído');
