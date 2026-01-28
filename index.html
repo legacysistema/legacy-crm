@@ -3381,6 +3381,31 @@ supabaseClient.auth.onAuthStateChange((event, session) => {
             carregarDadosDaNuvem();
         }, 3000);
     }
+async pushToSupabase() {
+  const user = (await supabaseClient.auth.getUser()).data.user;
+  if (!user) return;
+
+  const keys = await getAllKVKeys();
+
+  for (const key of keys) {
+    const value = await dbGet("kv", key);
+    if (!value) continue;
+
+    await supabaseClient
+      .from("clients_data")
+      .upsert({
+        user_id: user.id,
+        record_id: key,
+        payload: value,
+        payload_hash: await this.hash(value),
+        updated_at: new Date().toISOString()
+      });
+  }
+
+  console.log("✔ PUSH Supabase concluído");
+}
+
+
 });
 
 /* ===============================
@@ -3421,6 +3446,75 @@ function apagarHistorico() {
     // Recarrega os dados reais do banco
     carregarClientes();
 }
+
+<script>
+const SyncEngine = {
+  async sync() {
+    await this.pushToSupabase();
+    await this.pullFromSupabase();
+  },
+
+  async pushToSupabase() {
+    const user = (await supabaseClient.auth.getUser()).data.user;
+    if (!user) return;
+
+    const keys = await getAllKVKeys();
+
+    for (const key of keys) {
+      const value = await dbGet("kv", key);
+      if (!value) continue;
+
+      await supabaseClient
+        .from("clients_data")
+        .upsert({
+          user_id: user.id,
+          record_id: key,
+          payload: value,
+          payload_hash: await this.hash(value),
+          updated_at: new Date().toISOString()
+        });
+    }
+
+    console.log("✔ PUSH Supabase concluído");
+  },
+
+  async pullFromSupabase() {
+    const user = (await supabaseClient.auth.getUser()).data.user;
+    if (!user) return;
+
+    const lastSync = localStorage.getItem("last_sync") || "1970-01-01";
+
+    const { data } = await supabaseClient
+      .from("clients_data")
+      .select("*")
+      .eq("user_id", user.id)
+      .gte("updated_at", lastSync);
+
+    for (const row of data || []) {
+      const local = await dbGet("kv", row.record_id);
+      const localHash = local ? await this.hash(local) : null;
+
+      if (localHash === row.payload_hash) continue;
+
+      await dbSet("kv", row.record_id, row.payload);
+    }
+
+    localStorage.setItem("last_sync", new Date().toISOString());
+    console.log("✔ PULL Supabase concluído");
+  },
+
+  async hash(obj) {
+    const str = JSON.stringify(obj);
+    const buf = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(str)
+    );
+    return Array.from(new Uint8Array(buf))
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join("");
+  }
+};
+
 </script>
 
  
