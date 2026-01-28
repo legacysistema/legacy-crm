@@ -3268,7 +3268,8 @@ async function syncIndexedDBToSupabase() {
     console.error('SupabaseClient não inicializado')
     return
   }
-const { data, error } = await supabaseClient.auth.getUser()
+
+  const { data, error } = await supabaseClient.auth.getUser()
 
   if (error || !data?.user) {
     console.warn('Usuário não autenticado')
@@ -3290,7 +3291,7 @@ const { data, error } = await supabaseClient.auth.getUser()
   }
 
   const payload = records.map(r => ({
-    id: `${r.entity}_${r.id}`,
+    id: `${user.id}_${r.entity}_${r.id}`,
     user_id: user.id,
     entity: r.entity,
     data: r.data,
@@ -3298,7 +3299,7 @@ const { data, error } = await supabaseClient.auth.getUser()
   }))
 
   const { error: upsertError } = await supabaseClient
-    .from('client_data')
+    .from('clients_data')
     .upsert(payload, { onConflict: 'id' })
 
   if (upsertError) {
@@ -3313,7 +3314,7 @@ window.syncIndexedDBToSupabase = syncIndexedDBToSupabase
 
 /* sincroniza a cada 1 minuto */
 setInterval(syncIndexedDBToSupabase, 60000)
-};
+
 
 </script>
 
