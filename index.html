@@ -3260,5 +3260,178 @@ const globalConfig = {
         }
     });
     </script>
+<script>
+/* =====================================================
+   1. EXPORTAR DADOS DO INDEXEDDB
+   ===================================================== */
+function exportIndexedDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open('RCSistemasDB');
+
+        request.onerror = (event) => {
+            reject('Erro ao abrir DB: ' + event.target.error);
+        };
+
+        request.onsuccess = (event) => {
+            const db = event.target.result;
+
+            // Se não houver stores, retorna vazio
+            if (db.objectStoreNames.length === 0) {
+                resolve([]);
+                return;
+            }
+
+            const stores = Array.from(db.objectStoreNames);
+            const result = [];
+            let pending = stores.length;
+
+            stores.forEach((storeName) => {
+                const tx = db.transaction(storeName, 'readonly');
+                const store = tx.objectStore(storeName);
+                const getAllRequest = store.getAll();
+
+                getAllRequest.onsuccess = () => {
+                    getAllRequest.result.forEach((item) => {
+                        const itemId = item.id || item.uuid || Date.now();
+
+                        result.push({
+                            id: `${storeName}_${itemId}`,
+                            entity: storeName,
+                            data: item
+                        });
+                    });
+
+                    pending--;
+                    if (pending === 0) {
+                        resolve(result);
+                    }
+                };
+
+                getAllRequest.onerror = () => {
+                    pending--;
+                    if (pending === 0) {
+                        resolve(result);
+                    }
+                };
+            });
+        };
+    });
+}
+
+/* =====================================================
+   2. SINCRONIZAR (UPLOAD) INDEXEDDB -> SUPABASE
+   ===================================================== */
+async function syncIndexedDBToSupabase() {
+    if (!window.supabaseClient) {
+        console.warn('Supabase Client não inicializado.');
+        return;
+    }
+
+    try {
+        const { data: { user } } = await window.supabaseClient.auth.getUser();
+        if (!user) return;
+
+        const records = await exportIndexedDB();
+        if (!records || records.length === 0) return;
+
+        const payload = records.map((r) => ({
+            id: r.id,
+            user_id: user.id,
+            entity: r.entity,
+            data: r.data,
+            updated_at: new Date()
+        }));
+
+        const { error } = await window.supabaseClient
+            .from('client_data')
+            .upsert(payload, { onConflict: 'id' });
+
+        if (error) {
+            console.error('Erro ao sincronizar com Supabase:', error);
+        } else {
+            console.log(`✔️ Backup Cloud realizado: ${payload.length} registros.`);
+        }
+
+    } catch (err) {
+        console.error('Erro interno na sincronização (Upload):', err);
+    }
+}
+
+/* =====================================================
+   3. RESTAURAR (DOWNLOAD) SUPABASE -> INDEXEDDB
+   ===================================================== */
+async function carregarDadosDaNuvem() {
+    if (!window.supabaseClient) return;
+
+    try {
+        const { data: { user } } = await window.supabaseClient.auth.getUser();
+        if (!user) return;
+
+        const { data, error } = await window.supabaseClient
+            .from('client_data')
+            .select('*')
+            .eq('user_id', user.id);
+
+        if (error) throw error;
+        if (!data || data.length === 0) return;
+
+        console.log(`📥 Baixando ${data.length} registros da nuvem...`);
+
+        const request = indexedDB.open('RCSistemasDB');
+
+        request.onsuccess = (event) => {
+            const db = event.target.result;
+
+            const dadosPorStore = {};
+            data.forEach((registro) => {
+                if (!dadosPorStore[registro.entity]) {
+                    dadosPorStore[registro.entity] = [];
+                }
+                dadosPorStore[registro.entity].push(registro.data);
+            });
+
+            Object.keys(dadosPorStore).forEach((storeName) => {
+                if (!db.objectStoreNames.contains(storeName)) {
+                    console.warn(`Store '${storeName}' não existe localmente.`);
+                    return;
+                }
+
+                const tx = db.transaction(storeName, 'readwrite');
+                const store = tx.objectStore(storeName);
+
+                dadosPorStore[storeName].forEach((item) => {
+                    store.put(item);
+                });
+
+                tx.oncomplete = () => {
+                    console.log(`✅ Restaurado: ${storeName}`);
+                };
+
+                tx.onerror = (e) => {
+                    console.error(`Erro ao restaurar ${storeName}`, e);
+                };
+            });
+        };
+
+    } catch (err) {
+        console.error('Erro ao carregar dados da nuvem:', err);
+    }
+}
+
+/* =====================================================
+   4. INICIALIZAÇÃO
+   ===================================================== */
+
+// Pull inicial (uma vez)
+setTimeout(() => {
+    carregarDadosDaNuvem();
+}, 3000);
+
+// Loop de backup (a cada 60s)
+setInterval(() => {
+    syncIndexedDBToSupabase();
+}, 60000);
+</script>
+
 </body>
 </html>
