@@ -3315,6 +3315,50 @@ window.syncIndexedDBToSupabase = syncIndexedDBToSupabase
 /* sincroniza a cada 1 minuto */
 setInterval(syncIndexedDBToSupabase, 60000)
 
+Object.defineProperty(window, 'exportIndexedDB', {
+  configurable: false,
+  writable: false,
+  value: async function () {
+    const service = window.dbService || window.DBService || window.indexedDBService
+
+    if (!service || typeof service.getAll !== 'function') {
+      console.error('Serviço IndexedDB não disponível')
+      return []
+    }
+
+    const stores = [
+      'contacts',
+      'albums',
+      'opps',
+      'products',
+      'movements',
+      'events',
+      'eventTypes',
+      'visitTypes',
+      'transactions',
+      'customReports'
+    ]
+
+    const result = []
+
+    for (const store of stores) {
+      try {
+        const items = await service.getAll(store)
+        items.forEach(item => {
+          result.push({
+            entity: store,
+            id: item.id,
+            data: item
+          })
+        })
+      } catch (e) {
+        console.warn(`Falha ao exportar ${store}`, e)
+      }
+    }
+
+    return result
+  }
+})
 
 </script>
 
