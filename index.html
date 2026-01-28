@@ -3315,31 +3315,47 @@ const SyncEngine = {
     console.log('✔ PUSH Supabase concluído');
   },
 
-  async pullFromSupabase() {
-    const user = (await supabaseClient.auth.getUser()).data.user;
-    if (!user) return;
+async pullFromSupabase() {
+  const user = (await supabaseClient.auth.getUser()).data.user;
+  if (!user) return;
 
-    const lastSync = localStorage.getItem('last_sync') || '1970-01-01';
+  const lastSync = localStorage.getItem('last_sync') || '1970-01-01';
 
-    const { data } = await supabaseClient
-      .from('clients_data')
-      .select('*')
-      .eq('user_id', user.id)
-      .gte('updated_at', lastSync);
+  const { data, error } = await supabaseClient
+    .from('clients_data')
+    .select('*')
+    .eq('user_id', user.id)
+    .gte('updated_at', lastSync);
 
-    for (const row of data || []) {
-      const local = (await db.getAll(row.store_name))
-        .find(r => r.id === row.record_id);
+  if (error) {
+    console.error('Erro no PULL Supabase:', error);
+    return;
+  }
 
-      const localHash = local ? await this.hash(local) : null;
+  for (const row of data || []) {
+    const localRecords = await db.getAll(row.store_name);
+    const local = localRecords.find(r => r.id === row.record_id);
 
-      if (localHash === row.payload_hash) continue;
+    const localHash = local ? await this.hash(local) : null;
 
-      await db.put(row.store_name, row.payload);
-    }
+    // 🔒 não sobrescreve se for igual
+    if (localHash === row.payload_hash) continue;
 
-    console.log('✔ PULL Supabase concluído');
-  },
+    // garante o id correto
+    const record = {
+      ...row.payload,
+      id: row.record_id
+    };
+
+    // 🔧 WRITE SEGURO
+    await putInStore(row.store_name, record);
+  }
+
+  // atualiza o last_sync SOMENTE após sucesso
+  localStorage.setItem('last_sync', new Date().toISOString());
+
+  console.log('✔ PULL Supabase concluído');
+}
 
   async sync() {
     await this.pushToSupabase();
@@ -3405,7 +3421,7 @@ function apagarHistorico() {
     // Recarrega os dados reais do banco
     carregarClientes();
 }
-
+</script>
 
  
 
