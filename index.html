@@ -3050,13 +3050,13 @@
         
 /* =====================================================
    IndexedDB Persistence Layer
-   Banco: rc_crm_db
+   Banco: RCSistemasDB
    MIGRAÇÃO AUTOMÁTICA DE localStorage
    NÃO ALTERA FLUXO EXISTENTE
 ===================================================== */
 
-const RC_DB_NAME = "rc_crm_db";
-const RC_DB_VERSION = 1;
+const RC_DB_NAME = "RCSistemasDB";
+const RC_DB_VERSION = 5;
 let rcDB = null;
 let rcMemoryCache = {};
 
@@ -3347,13 +3347,68 @@ const SyncEngine = {
   }
 };
 
-/* ---------- AUTO SYNC ---------- */
+<script>
+/* ===============================
+   AUTH STATE CHANGE
+   =============================== */
 supabaseClient.auth.onAuthStateChange((event, session) => {
-  if (event === 'SIGNED_IN') {
-    setTimeout(() => SyncEngine.sync(), 2000);
-    setInterval(() => SyncEngine.sync(), 60000);
-  }
+    if (event === 'SIGNED_IN') {
+        setTimeout(() => {
+            SyncEngine.sync();
+        }, 2000);
+
+        setInterval(() => {
+            SyncEngine.sync();
+        }, 60000);
+
+        setTimeout(() => {
+            carregarDadosDaNuvem();
+        }, 3000);
+    }
 });
+
+/* ===============================
+   LOAD INICIAL
+   =============================== */
+document.addEventListener('DOMContentLoaded', () => {
+    carregarClientes();
+});
+
+/* ===============================
+   RENDERIZAÇÃO
+   =============================== */
+function renderizarClientes(clientes) {
+    const tbody = document.querySelector('#clientes-table-body');
+    tbody.innerHTML = '';
+
+    clientes.forEach(cliente => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${cliente.nome}</td>
+            <td>${cliente.email}</td>
+            <td>${cliente.telefone}</td>
+            <td>${cliente.status}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+/* ===============================
+   APAGAR HISTÓRICO (SEGURO)
+   =============================== */
+function apagarHistorico() {
+    // Remove apenas filtros, buscas, seleções
+    localStorage.removeItem('cliente_filtros');
+    localStorage.removeItem('cliente_busca');
+    localStorage.removeItem('cliente_view');
+
+    // Recarrega os dados reais do banco
+    carregarClientes();
+}
+
+
+ 
+
 </script>
 
 </body>
