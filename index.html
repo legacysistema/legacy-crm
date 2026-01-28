@@ -2020,12 +2020,19 @@
 // =========================================================================
         // CONFIGURAÇÃO SUPABASE & AUTENTICAÇÃO
         // =========================================================================
-        const SUPABASE_URL = 'https://rjyxkouegrropsarrhje.supabase.co';
-        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJqeXhrb3VlZ3Jyb3BzYXJyaGplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk1NjYxNjcsImV4cCI6MjA4NTE0MjE2N30.UjNPnVBVhQcUSirXeWZ3RmYmAhDMqqbbVUChG_Mv57U';
+        
+         const SUPABASE_URL = 'https://rjyxkouegrropsarrhje.supabase.co'
+         const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJqeXhrb3VlZ3Jyb3BzYXJyaGplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk1NjYxNjcsImV4cCI6MjA4NTE0MjE2N30.UjNPnVBVhQcUSirXeWZ3RmYmAhDMqqbbVUChG_Mv57U';
         
         // Inicializa Cliente
         window.supabaseClient = supabase.createClient (SUPABASE_URL, SUPABASE_KEY);
-  
+       
+         
+        
+       let lastSyncAt = Number(localStorage.getItem('lastSyncAt')) || 0;
+       const SYNC_INTERVAL = 60 * 1000; // 1 minuto 
+
+
         const authManager = {
             // Verifica sessão atual ao carregar
             init: async () => {
@@ -3261,106 +3268,92 @@ const globalConfig = {
         }
     });
     </script>
+
+ 
+
+<!-- ================= SUPABASE SYNC LAYER ================= -->
 <script>
+const SUPABASE_URL = "https://rjyxkouegrropsarrhje.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJqeXhrb3VlZ3Jyb3BzYXJyaGplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk1NjYxNjcsImV4cCI6MjA4NTE0MjE2N30.UjNPnVBVhQcUSirXeWZ3RmYmAhDMqqbbVUChG_Mv57U";
 
-async function syncIndexedDBToSupabase() {
-  if (!window.supabaseClient) {
-    console.error('SupabaseClient não inicializado')
-    return
-  }
+const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-  const { data, error } = await supabaseClient.auth.getUser()
+/*
+ Tabela única: rcsync
+ Campos:
+ id (uuid, pk)
+ payload (jsonb)
+ updated_at (timestamp)
+ deleted (boolean)
+*/
 
-  if (error || !data?.user) {
-    console.warn('Usuário não autenticado')
-    return
-  }
+const DB_NAME = "RCSistemasDB";
+const STORE = "sync";
 
-  const user = data.user
-
-  if (typeof exportIndexedDB !== 'function') {
-    console.error('exportIndexedDB() não encontrada')
-    return
-  }
-
-  const records = await exportIndexedDB()
-
-  if (!records || !records.length) {
-    console.log('Nenhum dado para sincronizar')
-    return
-  }
-
-  const payload = records.map(r => ({
-    id: `${user.id}_${r.entity}_${r.id}`,
-    user_id: user.id,
-    entity: r.entity,
-    data: r.data,
-    updated_at: new Date().toISOString()
-  }))
-
-  const { error: upsertError } = await supabaseClient
-    .from('clients_data')
-    .upsert(payload, { onConflict: 'id' })
-
-  if (upsertError) {
-    console.error('Erro ao sincronizar:', upsertError)
-  } else {
-    console.log(`✔ Sincronização concluída (${payload.length} registros)`)
-  }
+function openIndexedDB(){
+  return new Promise((resolve, reject)=>{
+    const req = indexedDB.open(DB_NAME,1);
+    req.onupgradeneeded = e=>{
+      const db = e.target.result;
+      if(!db.objectStoreNames.contains(STORE)){
+        db.createObjectStore(STORE,{keyPath:"id"});
+      }
+    };
+    req.onsuccess = ()=>resolve(req.result);
+    req.onerror = ()=>reject(req.error);
+  });
 }
 
-/* expõe para console */
-window.syncIndexedDBToSupabase = syncIndexedDBToSupabase
-
-/* sincroniza a cada 1 minuto */
-setInterval(syncIndexedDBToSupabase, 60000)
-
-Object.defineProperty(window, 'exportIndexedDB', {
-  configurable: false,
-  writable: false,
-  value: async function () {
-    const service = window.dbService || window.DBService || window.indexedDBService
-
-    if (!service || typeof service.getAll !== 'function') {
-      console.error('Serviço IndexedDB não disponível')
-      return []
+// INDEXEDDB -> SUPABASE
+async function pushToSupabase(){
+  const db = await openIndexedDB();
+  const tx = db.transaction(STORE,"readonly");
+  const store = tx.objectStore(STORE);
+  const all = store.getAll();
+  all.onsuccess = async ()=>{
+    for(const row of all.result){
+      if(row.deleted) continue;
+      await supabaseClient.from("rcsync").upsert({
+        id: row.id,
+        payload: row,
+        deleted: false
+      },{onConflict:"id"});
     }
+  };
+}
 
-    const stores = [
-      'contacts',
-      'albums',
-      'opps',
-      'products',
-      'movements',
-      'events',
-      'eventTypes',
-      'visitTypes',
-      'transactions',
-      'customReports'
-    ]
+// SUPABASE -> INDEXEDDB (sem trazer deletados)
+async function pullFromSupabase(){
+  const {data,error} = await supabaseClient
+    .from("rcsync")
+    .select("*")
+    .eq("deleted",false);
+  if(error) return;
+  const db = await openIndexedDB();
+  const tx = db.transaction(STORE,"readwrite");
+  const store = tx.objectStore(STORE);
+  data.forEach(r=>{
+    store.put(r.payload);
+  });
+}
 
-    const result = []
+// SOFT DELETE
+async function deleteRecord(id){
+  const db = await openIndexedDB();
+  const tx = db.transaction(STORE,"readwrite");
+  tx.objectStore(STORE).put({id,deleted:true});
+  await supabaseClient.from("rcsync").update({deleted:true}).eq("id",id);
+}
 
-    for (const store of stores) {
-      try {
-        const items = await service.getAll(store)
-        items.forEach(item => {
-          result.push({
-            entity: store,
-            id: item.id,
-            data: item
-          })
-        })
-      } catch (e) {
-        console.warn(`Falha ao exportar ${store}`, e)
-      }
-    }
-
-    return result
-  }
-})
-
+document.addEventListener("DOMContentLoaded", async ()=>{
+  await pullFromSupabase();
+  await pushToSupabase();
+});
 </script>
+<!-- =============== END SUPABASE SYNC =================== -->
 
 </body>
 </html>
+
+
+
