@@ -2027,7 +2027,25 @@
         // Inicializa Cliente
         window.supabaseClient = supabase.createClient (SUPABASE_URL, SUPABASE_KEY);
        
-         
+         async function forceSyncToSupabase(storeName, localId, payload) {
+  if (!window.supabaseClient) return;
+
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if (!session) return;
+
+  await supabaseClient
+    .from('legacy_sync')
+    .upsert({
+      user_id: session.user.id,
+      store_name: storeName,
+      local_id: String(localId),
+      payload,
+      updated_at: new Date().toISOString()
+    }, {
+      onConflict: 'user_id,store_name,local_id'
+    });
+}
+
         
        let lastSyncAt = Number(localStorage.getItem('lastSyncAt')) || 0;
        const SYNC_INTERVAL = 60 * 1000; // 1 minuto 
