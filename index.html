@@ -3369,7 +3369,8 @@ async function flushQueue() {
 }
 
 setInterval(flushQueue, 5000);
-    
+
+<script>
 async function pullFromSupabase() {
   const session = await supabaseClient.auth.getSession();
   if (!session.data.session) return;
@@ -3559,71 +3560,6 @@ function startLegacySync() {
     }, 4000);
 }
 document.addEventListener('DOMContentLoaded', startLegacySync);
-</script>
-
-
-<script>
-/* === Supabase -> IndexedDB Global Auto Sync === */
-(function(){
-
-const SYNC_TABLE = 'legacy_sync';
-const LAST_SYNC_KEY = '__legacy_last_sync__';
-
-async function startReverseSync(){
-    console.log('[LegacySync] Inicializando retorno Supabase → IndexedDB');
-
-    if(!window.supabaseClient || !window.indexedDB || !window.DB_NAME) return;
-
-    const { data:{ session } } = await supabaseClient.auth.getSession();
-    if(!session) return;
-
-    const lastSync = localStorage.getItem(LAST_SYNC_KEY) || '1970-01-01T00:00:00Z';
-
-    const { data, error } = await supabaseClient
-        .from(SYNC_TABLE)
-        .select('*')
-        .eq('user_id', session.user.id)
-        .gt('updated_at', lastSync);
-
-    if(error){
-        console.error('[LegacySync] Reverse error:', error);
-        return;
-    }
-
-    if(!data || !data.length) return;
-
-    const req = indexedDB.open(DB_NAME, DB_VERSION || undefined);
-    req.onsuccess = (e)=>{
-        const db = e.target.result;
-        data.forEach(row=>{
-            if(!db.objectStoreNames.contains(row.store_name)) return;
-
-            const tx = db.transaction(row.store_name, 'readwrite');
-            const store = tx.objectStore(row.store_name);
-
-            if(row.deleted_at){
-                store.delete(row.local_id);
-            } else if(row.payload){
-                store.put(row.payload, row.local_id);
-            }
-        });
-    };
-
-    localStorage.setItem(LAST_SYNC_KEY, new Date().toISOString());
-}
-
-document.addEventListener('visibilitychange', ()=>{
-    if(!document.hidden) startReverseSync();
-});
-
-window.addEventListener('online', startReverseSync);
-setInterval(startReverseSync, 15000);
-
-document.addEventListener('DOMContentLoaded', ()=>{
-    setTimeout(startReverseSync, 6000);
-});
-
-})();
 </script>
 
 </body>
