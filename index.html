@@ -3463,7 +3463,7 @@ async function existsLocally(store, localId) {
 if (!(await existsLocally(row.store_name, row.local_id))) {
   tx.objectStore(row.store_name).add(row.payload);
 }
-</script>
+
 
 
 
@@ -3471,8 +3471,96 @@ if (!(await existsLocally(row.store_name, row.local_id))) {
 
 
  
+
+<script>
+/* === Legacy IndexedDB -> Supabase Global Sync (Auto Injected) === */
+function startLegacySync() {
+    console.log("[LegacySync] Inicializando conversor automático...");
+    const SYNC_TABLE = 'legacy_sync';
+
+    const originalPut = IDBObjectStore.prototype.put;
+    const originalAdd = IDBObjectStore.prototype.add;
+    const originalDelete = IDBObjectStore.prototype.delete;
+
+    IDBObjectStore.prototype.put = function(value, key) {
+        const req = originalPut.call(this, value, key);
+        const storeName = this.name;
+        req.onsuccess = async (e) => {
+            const effectiveKey = e.target.result;
+            if (value && !value.id) value.id = effectiveKey;
+            await syncToSupabase(storeName, effectiveKey, value, false);
+        };
+        return req;
+    };
+
+    IDBObjectStore.prototype.add = function(value, key) {
+        const req = originalAdd.call(this, value, key);
+        const storeName = this.name;
+        req.onsuccess = async (e) => {
+            const effectiveKey = e.target.result;
+            if (value && !value.id) value.id = effectiveKey;
+            await syncToSupabase(storeName, effectiveKey, value, false);
+        };
+        return req;
+    };
+
+    IDBObjectStore.prototype.delete = function(key) {
+        const req = originalDelete.call(this, key);
+        const storeName = this.name;
+        req.onsuccess = async () => {
+            await syncToSupabase(storeName, key, null, true);
+        };
+        return req;
+    };
+
+    async function syncToSupabase(storeName, localId, payload, isDeleted) {
+        try {
+            if (!window.supabaseClient) return;
+            const { data: { session } } = await supabaseClient.auth.getSession();
+            if (!session) return;
+
+            const record = {
+                user_id: session.user.id,
+                store_name: storeName,
+                local_id: String(localId),
+                payload: isDeleted ? null : payload,
+                deleted_at: isDeleted ? new Date().toISOString() : null,
+                updated_at: new Date().toISOString()
+            };
+
+            const { error } = await supabaseClient
+                .from(SYNC_TABLE)
+                .upsert(record, { onConflict: 'user_id,store_name,local_id' });
+
+            if (error) console.error(error);
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
+    setTimeout(async () => {
+        if (!window.indexedDB || !window.DB_NAME) return;
+        const { data: { session } } = await supabaseClient.auth.getSession();
+        if (!session) return;
+
+        const req = indexedDB.open(DB_NAME, DB_VERSION || undefined);
+        req.onsuccess = (e) => {
+            const db = e.target.result;
+            [...db.objectStoreNames].forEach(storeName => {
+                const tx = db.transaction(storeName, 'readonly');
+                const store = tx.objectStore(storeName);
+                const all = store.getAll();
+                all.onsuccess = async () => {
+                    for (const item of all.result) {
+                        await syncToSupabase(storeName, item.id, item, false);
+                    }
+                };
+            });
+        };
+    }, 4000);
+}
+document.addEventListener('DOMContentLoaded', startLegacySync);
+</script>
+
 </body>
 </html>
-
-
-
