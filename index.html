@@ -3369,8 +3369,7 @@ async function flushQueue() {
 }
 
 setInterval(flushQueue, 5000);
-
-<script>
+    
 async function pullFromSupabase() {
   const session = await supabaseClient.auth.getSession();
   if (!session.data.session) return;
