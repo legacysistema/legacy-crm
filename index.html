@@ -3389,31 +3389,47 @@ const globalConfig = {
     return r;
   };
 
-  async function handleWrite(store, method, value, key, req) {
-    if (isReplicating) return;
+ /* ================================
+   PATCH SEGURO — NÃO QUEBRA NADA
+================================ */
 
-    req.onsuccess = async e => {
-      const userId = await getUserId();
-      if (!userId) return;
+async function handleWrite(store, method, value, key, req) {
+  if (isReplicating) return;
 
-      const actualKey = key ?? e.target.result;
-
-      await client.from(SYNC_TABLE).upsert({
-        user_id: userId,
-        db_name: CANONICAL_DB,
-        store_name: store.name,
-        record_key: String(actualKey),
-        record_value: method === 'delete' ? null : value,
-        is_deleted: method === 'delete',
-        device_id: DEVICE_ID,
-        updated_at: new Date().toISOString()
-      }, {
-        onConflict: 'user_id,db_name,store_name,record_key'
-      });
-
-      console.log('☁️ PUSH:', store.name, actualKey);
-    };
+  // 🚫 NÃO sincroniza dados sensíveis de auth / device
+  if (
+    store.name === 'kv' &&
+    typeof key === 'string' &&
+    (
+      key.startsWith('sb-') ||
+      key.startsWith('__')
+    )
+  ) {
+    return;
   }
+
+  req.onsuccess = async e => {
+    const userId = await getUserId();
+    if (!userId) return;
+
+    const actualKey = key ?? e.target.result;
+
+    await client.from(SYNC_TABLE).upsert({
+      user_id: userId,
+      db_name: CANONICAL_DB,
+      store_name: store.name,
+      record_key: String(actualKey),
+      record_value: method === 'delete' ? null : value,
+      is_deleted: method === 'delete',
+      device_id: DEVICE_ID,
+      updated_at: new Date().toISOString()
+    }, {
+      onConflict: 'user_id,db_name,store_name,record_key'
+    });
+
+    console.log('☁️ PUSH:', store.name, actualKey);
+  };
+}
 
   /* ================================
      5. CLOUD → IDB
