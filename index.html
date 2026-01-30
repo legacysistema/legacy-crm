@@ -3494,9 +3494,8 @@ const globalConfig = {
         }
       })
       .subscribe();
-  };
-
- /* ================================
+  })(); // 🔥 FECHA O IIFE PRINCIPAL
+/* =================================
    7. INIT (CORRIGIDO)
 ================================= */
 
@@ -3506,7 +3505,6 @@ async function fullStartupSync() {
 
   console.log("🔐 Usuário logado:", userId);
 
-  // GARANTE BANCO ANTES DE QUALQUER SYNC
   await bootstrapDatabases();
 
   console.log("📦 Bancos garantidos, iniciando sync...");
@@ -3522,12 +3520,12 @@ client.auth.onAuthStateChange(async (evt) => {
   }
 });
 
-// fallback (caso já esteja logado)
-(async () => {
-  const uid = await getUserId();
-  if (uid) await fullStartupSync();
+// fallback seguro
+(function () {
+  getUserId().then(uid => {
+    if (uid) fullStartupSync();
+  });
 })();
-
 </script>
 
 
