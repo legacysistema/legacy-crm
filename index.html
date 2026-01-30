@@ -3270,275 +3270,178 @@ const globalConfig = {
 <script>
 /**
  * 🚀 UNIVERSAL IDB <-> SUPABASE SYNC ADAPTER
- * Intercepta globalmente todas as operações do IndexedDB
+ * Intercepta globalmente operações do IndexedDB e sincroniza com Supabase
  */
-(function() {
-    // Configurações
+(async function() {
+    // --- 1. CONFIGURAÇÕES E ESTADO ---
     const SYNC_TABLE = 'indexeddb_sync';
-    const DEVICE_ID = crypto.randomUUID(); // Identidade desta aba/sessão
-    let isReplicating = false; // Semáforo para evitar loop infinito
+    const DEVICE_ID = crypto.randomUUID();
+    let isReplicating = false; // Semáforo para evitar loops de replicação
 
-    // Função auxiliar para pegar o ID do usuário (espera auth carregar)
+    const getSupabaseClient = () => window.supabaseClient || window.supabase;
+
+    // Aguarda o cliente Supabase estar disponível
+    const waitForSupabase = () => new Promise(resolve => {
+        const check = () => {
+            if (getSupabaseClient()) resolve(getSupabaseClient());
+            else setTimeout(check, 100);
+        };
+        check();
+    });
+
+    const client = await waitForSupabase();
+    console.log("🛠️ Interceptador de IndexedDB Ativado!");
+
+    // --- 2. FUNÇÕES AUXILIARES ---
     async function getUserId() {
-        const { data } = await supabase.auth.getSession();
+        const { data } = await client.auth.getSession();
         return data.session?.user?.id;
     }
 
-    // ---------------------------------------------------------
-    // 1. INTERCEPTAÇÃO (Monkey Patching)
-    // ---------------------------------------------------------
-    
-    const originalPut = IDBObjectStore.prototype.put;
-    const originalAdd = IDBObjectStore.prototype.add;
-    const originalDelete = IDBObjectStore.prototype.delete;
+    function parseKey(key) {
+        return !isNaN(key) && !isNaN(parseFloat(key)) ? Number(key) : key;
+    }
 
-    // Intercepta PUT (Atualizar/Inserir)
+    // --- 3. INTERCEPTAÇÃO (OUTBOUND: LOCAL -> NUVEM) ---
+    const originalMethods = {
+        put: IDBObjectStore.prototype.put,
+        add: IDBObjectStore.prototype.add,
+        delete: IDBObjectStore.prototype.delete
+    };
+
     IDBObjectStore.prototype.put = function(value, key) {
-        const req = originalPut.apply(this, arguments);
+        const req = originalMethods.put.apply(this, arguments);
         handleWriteOp(this, 'put', value, key, req);
         return req;
     };
 
-    // Intercepta ADD (Inserir)
     IDBObjectStore.prototype.add = function(value, key) {
-        const req = originalAdd.apply(this, arguments);
+        const req = originalMethods.add.apply(this, arguments);
         handleWriteOp(this, 'add', value, key, req);
         return req;
     };
 
-    // Intercepta DELETE (Remover)
     IDBObjectStore.prototype.delete = function(key) {
-        const req = originalDelete.apply(this, arguments);
+        const req = originalMethods.delete.apply(this, arguments);
         handleWriteOp(this, 'delete', null, key, req);
         return req;
     };
 
-    // Lógica Central de Captura
     async function handleWriteOp(store, method, value, key, request) {
-        // Se a escrita veio do Supabase (Sync Reverso), ignoramos para não criar loop
-        if (isReplicating) return;
+        if (isReplicating) return; // Se a escrita veio da nuvem, não reenvia
 
         const dbName = store.transaction.db.name;
         const storeName = store.name;
-        
-        // Espera o sucesso da operação local antes de enviar
-        request.onsuccess = async (e) => {
-            const actualKey = key || e.target.result; // Pega a chave gerada se for autoIncrement
-            const userId = await getUserId();
 
-            if (!userId) return; // Não sincroniza se não estiver logado
+        request.onsuccess = async (e) => {
+            const actualKey = key || e.target.result;
+            const userId = await getUserId();
+            if (!userId) return;
 
             const payload = {
                 user_id: userId,
                 db_name: dbName,
                 store_name: storeName,
-                record_key: String(actualKey), // Normaliza chave para texto
+                record_key: String(actualKey),
                 record_value: method === 'delete' ? null : value,
                 is_deleted: method === 'delete',
                 device_id: DEVICE_ID,
-                updated_at: Date.now()
+                updated_at: new Date().toISOString()
             };
 
-            // Envia para Supabase (Upsert)
-            // onConflict garante que atualizamos se já existir
-            await supabase
-                .from(SYNC_TABLE)
-                .upsert(payload, { onConflict: 'user_id, db_name, store_name, record_key' });
-                
-            console.log(`☁️ Sync Up [${method}]: ${storeName}/${actualKey}`);
+            await client.from(SYNC_TABLE).upsert(payload, { 
+                onConflict: 'user_id, db_name, store_name, record_key' 
+            });
         };
     }
 
-    // ---------------------------------------------------------
-    // 2. SYNC REVERSO (Supabase -> IndexedDB)
-    // ---------------------------------------------------------
-
-    async function startReverseSync() {
-        const userId = await getUserId();
-        if (!userId) return;
-
-        supabase
-            .channel('global-idb-sync')
-            .on(
-                'postgres_changes',
-                { event: '*', schema: 'public', table: SYNC_TABLE, filter: `user_id=eq.${userId}` },
-                async (payload) => {
-                    const newRec = payload.new;
-                    
-                    // Se foi este mesmo dispositivo que enviou, ignora (evita eco)
-                    if (newRec.device_id === DEVICE_ID) return;
-
-                    console.log(`⬇️ Sync Down: ${newRec.store_name}/${newRec.record_key}`);
-                    applyToLocalDB(newRec);
-                }
-            )
-            .subscribe();
-    }
-
-// ---------------------------------------------------------
-    // 3. BOOTSTRAP (Carga Inicial Inteligente)
-    // ---------------------------------------------------------
-
-    async function syncInitialState() {
-        const userId = await getUserId();
-        if (!userId) return;
-
-        console.log("🔄 Iniciando Carga Inicial da Nuvem...");
-
-        // 1. Busca TUDO do usuário (incluindo deletados para garantir limpeza local)
-        const { data: records, error } = await supabase
-            .from(SYNC_TABLE)
-            .select('*')
-            .eq('user_id', userId);
-
-        if (error || !records || records.length === 0) {
-            console.log("✅ Nada para sincronizar ou erro:", error);
-            return;
-        }
-
-        // 2. Agrupa registros por Banco de Dados para otimizar conexões
-        // Estrutura: { 'NomeDB': [registro1, registro2...] }
-        const changesByDB = records.reduce((acc, record) => {
-            if (!acc[record.db_name]) acc[record.db_name] = [];
-            acc[record.db_name].push(record);
-            return acc;
-        }, {});
-
-        // 3. Aplica mudanças banco por banco
-        for (const [dbName, dbRecords] of Object.entries(changesByDB)) {
-            openAndApplyBatch(dbName, dbRecords);
-        }
-    }
-
-    function openAndApplyBatch(dbName, records) {
-        const request = indexeddb.open(dbName);
+    // --- 4. REPLICAÇÃO (INBOUND: NUVEM -> LOCAL) ---
+    function applyBatch(dbName, records) {
+        const request = indexedDB.open(dbName);
 
         request.onsuccess = (e) => {
             const db = e.target.result;
-            const txNames = Array.from(db.objectStoreNames); // Stores disponíveis
-
-            // Filtra apenas registros cujas Stores existem localmente
-            const validRecords = records.filter(r => txNames.includes(r.store_name));
+            const availableStores = Array.from(db.objectStoreNames);
             
-            if (validRecords.length === 0) {
-                db.close();
-                return;
-            }
+            // Filtra registros que existem neste banco
+            const validRecords = records.filter(r => availableStores.includes(r.store_name));
+            if (validRecords.length === 0) { db.close(); return; }
 
-            // Precisamos de uma transação que englobe todas as stores afetadas
-            // Set cria array único de nomes de stores
             const activeStores = [...new Set(validRecords.map(r => r.store_name))];
             const tx = db.transaction(activeStores, 'readwrite');
-
-            // Ativa o modo de replicação para NÃO reenviar isso ao Supabase
-            isReplicating = true;
+            
+            isReplicating = true; // Bloqueia o interceptador
 
             validRecords.forEach(record => {
                 try {
                     const store = tx.objectStore(record.store_name);
+                    const key = parseKey(record.record_key);
                     
-                    // Converte chave se for número
-                    let key = record.record_key;
-                    if (!isNaN(key)) key = Number(key);
-
-                    if (record.is_deleted) {
-                        // LÓGICA DELETADOS: Garante que morra localmente
-                        // Se não existir, não dá erro, apenas ignora
-                        store.delete(key); 
-                    } else {
-                        // LÓGICA ATUALIZAÇÃO: Sobrescreve (Put)
-                        store.put(record.record_value, key);
-                    }
+                    if (record.is_deleted) store.delete(key);
+                    else store.put(record.record_value, key);
                 } catch (err) {
-                    console.warn(`Falha ao aplicar registro em ${record.store_name}:`, err);
+                    console.error(`Falha no sync de ${record.store_name}:`, err);
                 }
             });
 
-            tx.oncomplete = () => {
-                isReplicating = false; // Desativa modo replicação
-                console.log(`✅ ${dbName}: Sincronizados ${validRecords.length} registros.`);
-                db.close();
-            };
-
-            tx.onerror = () => {
-                isReplicating = false;
-                console.error(`❌ Erro na transação de ${dbName}`);
-                db.close();
-            };
-        };
-
-        request.onerror = () => {
-            console.error(`Não foi possível abrir o banco ${dbName} para sync.`);
+            tx.oncomplete = () => { isReplicating = false; db.close(); };
+            tx.onerror = () => { isReplicating = false; db.close(); };
         };
     }
 
-    // ---------------------------------------------------------
-    // INTEGRAÇÃO FINAL
-    // ---------------------------------------------------------
-    
-    // Atualize o listener de Auth para chamar o Bootstrap ao logar
-    supabase.auth.onAuthStateChange((event, session) => {
-        if (event === 'SIGNED_IN') {
-            startReverseSync(); // Liga o realtime
-            syncInitialState(); // Puxa o histórico (Bootstrap)
+    async function startSyncCycle() {
+        const userId = await getUserId();
+        if (!userId) return;
+
+        console.log("🔄 Sincronizando com a nuvem...");
+
+        // A. Carga Inicial (Bootstrap)
+        const { data: records } = await client.from(SYNC_TABLE).select('*').eq('user_id', userId);
+        if (records && records.length > 0) {
+            const groups = records.reduce((acc, r) => {
+                (acc[r.db_name] = acc[r.db_name] || []).push(r);
+                return acc;
+            }, {});
+            for (const db in groups) applyBatch(db, groups[db]);
         }
-    });
 
-    // Se a página recarregar e já estiver logado:
-    if (await getUserId()) {
-        startReverseSync();
-        syncInitialState();
-    }
-
-    // Aplica a mudança remota no IndexedDB local
-    function applyToLocalDB(record) {
-        const request = indexeddb.open(record.db_name);
-
-        request.onsuccess = (e) => {
-            const db = e.target.result;
-            // Precisamos verificar se a store existe (migrações de versão podem complicar)
-            if (!db.objectStoreNames.contains(record.store_name)) {
-                db.close();
-                return;
-            }
-
-            const tx = db.transaction(record.store_name, 'readwrite');
-            const store = tx.objectStore(record.store_name);
-
-            // Ativa o semáforo para o interceptador ignorar esta escrita
-            isReplicating = true;
-
-            try {
-                // Tenta converter a chave de volta ao tipo original (simples)
-                let key = record.record_key;
-                if (!isNaN(key)) key = Number(key); 
-
-                if (record.is_deleted) {
-                    store.delete(key);
-                } else {
-                    store.put(record.record_value, key);
+        // B. Realtime (Escuta mudanças de outros dispositivos)
+        client.channel('idb-sync-channel')
+            .on('postgres_changes', { 
+                event: '*', 
+                schema: 'public', 
+                table: SYNC_TABLE, 
+                filter: `user_id=eq.${userId}` 
+            }, (payload) => {
+                if (payload.new && payload.new.device_id !== DEVICE_ID) {
+                    applyBatch(payload.new.db_name, [payload.new]);
                 }
-            } catch (err) {
-                console.error("Erro ao aplicar sync reverso:", err);
-            }
-
-            tx.oncomplete = () => {
-                isReplicating = false; // Libera o semáforo
-                db.close();
-                // Opcional: Atualizar UI aqui se necessário
-            };
-        };
+            }).subscribe();
     }
 
-    // Inicializa o listener reverso quando a auth mudar ou página carregar
-    supabase.auth.onAuthStateChange((event, session) => {
-        if (event === 'SIGNED_IN') startReverseSync();
+    // --- 5. INICIALIZAÇÃO ---
+    client.auth.onAuthStateChange((event) => {
+        if (event === 'SIGNED_IN') startSyncCycle();
     });
 
-    // Tenta iniciar se já estiver logado
-    startReverseSync();
+    if (await getUserId()) startSyncCycle();
 
 })();
+
+async function getUserId() {
+  const { data: { user }, error } = await supabase.auth.getUser();
+
+  if (error || !user) {
+    console.error("Usuário não autenticado");
+    return null;
+  }
+
+  return user.id;
+}
+
+function uuidv4() {
+  return crypto.randomUUID();
+}
 </script>
  
 </body>
