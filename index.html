@@ -3395,15 +3395,27 @@ const globalConfig = {
 
         console.log("🔄 Sincronizando com a nuvem...");
 
-        // A. Carga Inicial (Bootstrap)
-        const { data: records } = await client.from(SYNC_TABLE).select('*').eq('user_id', userId);
-        if (records && records.length > 0) {
-            const groups = records.reduce((acc, r) => {
-                (acc[r.db_name] = acc[r.db_name] || []).push(r);
-                return acc;
-            }, {});
-            for (const db in groups) applyBatch(db, groups[db]);
-        }
+      // A. Carga Inicial (Bootstrap)
+const { data: records, error } = await client
+  .from(SYNC_TABLE)
+  .select('*'); // RLS já filtra por auth.uid()
+
+if (error) {
+  console.error('❌ Erro ao carregar sync inicial:', error);
+  return;
+}
+
+if (records && records.length > 0) {
+  const groups = records.reduce((acc, r) => {
+    (acc[r.db_name] = acc[r.db_name] || []).push(r);
+    return acc;
+  }, {});
+
+  for (const db in groups) {
+    applyBatch(db, groups[db]);
+  }
+}
+
 
         // B. Realtime (Escuta mudanças de outros dispositivos)
         client.channel('idb-sync-channel')
