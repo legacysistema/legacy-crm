@@ -3396,7 +3396,10 @@ const globalConfig = {
         console.log("🔄 Sincronizando com a nuvem...");
 
         // A. Carga Inicial (Bootstrap)
-        const { data: records } = await client.from(SYNC_TABLE).select('*').eq('user_id', userId);
+        const { data: records } = await client
+            .from(SYNC_TABLE)
+            .select('*')
+            .eq('user_id', userId);
         if (records && records.length > 0) {
             const groups = records.reduce((acc, r) => {
                 (acc[r.db_name] = acc[r.db_name] || []).push(r);
