@@ -7,74 +7,6 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script>
-/* === LegacySync Preload Gate (Supabase → IndexedDB BEFORE managers) === */
-(function(){
-    if(!window.indexedDB || !window.supabaseClient) return;
-
-    const originalOpen = indexedDB.open.bind(indexedDB);
-    let syncStarted = false;
-    let syncFinished = false;
-    const queue = [];
-
-    indexedDB.open = function(name, version){
-        if(syncFinished){
-            return originalOpen(name, version);
-        }
-
-        queue.push({name, version});
-
-        if(!syncStarted){
-            syncStarted = true;
-            startReverseSync().finally(()=>{
-                syncFinished = true;
-                queue.forEach(q => originalOpen(q.name, q.version));
-                queue.length = 0;
-            });
-        }
-
-        return {};
-    };
-
-    async function startReverseSync(){
-        try{
-            const { data:{ session } } = await supabaseClient.auth.getSession();
-            if(!session) return;
-
-            const lastSync = localStorage.getItem('__legacy_last_sync__') || '1970-01-01T00:00:00Z';
-
-            const { data } = await supabaseClient
-                .from('legacy_sync')
-                .select('*')
-                .eq('user_id', session.user.id)
-                .gt('updated_at', lastSync);
-
-            if(!data || !data.length) return;
-
-            const req = originalOpen(DB_NAME, DB_VERSION || undefined);
-            req.onsuccess = (e)=>{
-                const db = e.target.result;
-                data.forEach(row=>{
-                    if(!db.objectStoreNames.contains(row.store_name)) return;
-                    const tx = db.transaction(row.store_name,'readwrite');
-                    const store = tx.objectStore(row.store_name);
-
-                    if(row.deleted_at){
-                        store.delete(row.local_id);
-                    } else if(row.payload){
-                        store.put(row.payload, row.local_id);
-                    }
-                });
-            };
-
-            localStorage.setItem('__legacy_last_sync__', new Date().toISOString());
-        }catch(e){
-            console.warn('[LegacySync] preload fallback', e);
-        }
-    }
-})();
-</script>
-
 
     <style>
         :root {
@@ -829,106 +761,6 @@
             .intro-title { font-size: 1.8rem; }
         }
     </style>
-
-<script>
-/* =========================================================
-   GLOBAL LEGACY SYNC ENGINE (IndexedDB <-> Supabase)
-   Single-table strategy: legacy_sync
-   ZERO structural changes to the system
-   ========================================================= */
-(function(){
-  if(!window.indexedDB || !window.supabaseClient) return;
-
-  const TABLE = 'legacy_sync';
-  const DEVICE_ID = localStorage.getItem('__legacy_device__') || (()=>{
-    const v = crypto.randomUUID();
-    localStorage.setItem('__legacy_device__', v);
-    return v;
-  })();
-
-  const originalOpen = indexedDB.open.bind(indexedDB);
-  const originalAdd = IDBObjectStore.prototype.add;
-  const originalPut = IDBObjectStore.prototype.put;
-  const originalDelete = IDBObjectStore.prototype.delete;
-
-  let currentDB = null;
-
-  indexedDB.open = function(name, version){
-    const req = originalOpen(name, version);
-    req.onsuccess = e => currentDB = e.target.result;
-    return req;
-  };
-
-  async function pushChange(store, key, payload, deleted=false){
-    try{
-      const { data:{ session } } = await supabaseClient.auth.getSession();
-      if(!session) return;
-
-      await supabaseClient.from(TABLE).upsert({
-        user_id: session.user.id,
-        device_id: DEVICE_ID,
-        db_name: currentDB.name,
-        store_name: store.name,
-        local_id: key,
-        payload: deleted ? null : payload,
-        deleted_at: deleted ? new Date().toISOString() : null,
-        updated_at: new Date().toISOString()
-      }, { onConflict:'user_id,store_name,local_id' });
-    }catch(e){
-      console.warn('[LegacySync]', e);
-    }
-  }
-
-  IDBObjectStore.prototype.add = function(value, key){
-    const res = originalAdd.call(this, value, key);
-    res.onsuccess = ()=> pushChange(this, key ?? res.result, value);
-    return res;
-  };
-
-  IDBObjectStore.prototype.put = function(value, key){
-    const res = originalPut.call(this, value, key);
-    res.onsuccess = ()=> pushChange(this, key ?? res.result, value);
-    return res;
-  };
-
-  IDBObjectStore.prototype.delete = function(key){
-    const res = originalDelete.call(this, key);
-    res.onsuccess = ()=> pushChange(this, key, null, true);
-    return res;
-  };
-
-  // Reverse sync (Supabase -> IndexedDB)
-  window.addEventListener('load', async ()=>{
-    try{
-      const { data:{ session } } = await supabaseClient.auth.getSession();
-      if(!session || !currentDB) return;
-
-      const last = localStorage.getItem('__legacy_last_pull__') || '1970-01-01T00:00:00Z';
-
-      const { data } = await supabaseClient
-        .from(TABLE)
-        .select('*')
-        .eq('user_id', session.user.id)
-        .gt('updated_at', last);
-
-      if(!data) return;
-
-      data.forEach(row=>{
-        if(!currentDB.objectStoreNames.contains(row.store_name)) return;
-        const tx = currentDB.transaction(row.store_name,'readwrite');
-        const store = tx.objectStore(row.store_name);
-        if(row.deleted_at) store.delete(row.local_id);
-        else store.put(row.payload, row.local_id);
-      });
-
-      localStorage.setItem('__legacy_last_pull__', new Date().toISOString());
-    }catch(e){
-      console.warn('[LegacySync reverse]', e);
-    }
-  });
-})();
-</script>
-
 </head>
 <body class="not-authenticated">
 
@@ -2281,7 +2113,8 @@
         // Inicia verificação de Auth imediatamente
         authManager.init();
         
-
+</script>
+<script>
         // =========================================================================
         // LÓGICA ORIGINAL DO SISTEMA (INTACTA)
         // =========================================================================
@@ -3180,6 +3013,8 @@
                 }
             }
         };
+</script>
+<script>
 
         // --- APP INIT ---
         const app = {
@@ -3435,12 +3270,7 @@ const globalConfig = {
             document.body.style.overflow = '';
         }
     });
-    </script>
-<script>
-const supabaseClient = supabase.createClient(
-  "https://rjyxkouegrropsarrhje.supabase.co",
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJqeXhrb3VlZ3Jyb3BzYXJyaGplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk1NjYxNjcsImV4cCI6MjA4NTE0MjE2N30.UjNPnVBVhQcUSirXeWZ3RmYmAhDMqqbbVUChG_Mv57U"
-);
+
 
 async function getAllStores() {
   return new Promise((resolve, reject) => {
@@ -3538,7 +3368,7 @@ async function flushQueue() {
 
 setInterval(flushQueue, 5000);
 
-<script>
+
 async function pullFromSupabase() {
   const session = await supabaseClient.auth.getSession();
   if (!session.data.session) return;
@@ -3560,7 +3390,7 @@ async function pullFromSupabase() {
   };
 }
 
-<script>
+
 (function ensureInternalStores() {
   const req = indexedDB.open("RCSistemasDB", 5);
   req.onupgradeneeded = e => {
@@ -3576,7 +3406,6 @@ async function pullFromSupabase() {
   };
 })();
 
-<script>
 async function getOrCreateGlobalId(store, localId) {
   const db = await openSyncDB();
   return new Promise(resolve => {
@@ -3631,104 +3460,120 @@ async function existsLocally(store, localId) {
 if (!(await existsLocally(row.store_name, row.local_id))) {
   tx.objectStore(row.store_name).add(row.payload);
 }
-
-
-
-
 </script>
-
-
  
 
+<!-- ====================== SYNC LAYER (IndexedDB <-> Supabase) ====================== -->
 <script>
-/* === Legacy IndexedDB -> Supabase Global Sync (Auto Injected) === */
-function startLegacySync() {
-    console.log("[LegacySync] Inicializando conversor automático...");
-    const SYNC_TABLE = 'legacy_sync';
+/*
+ Enterprise Silent Sync Layer
+ - Intercepts IndexedDB add/put/delete
+ - One-table Supabase sync
+ - User-scoped (supabase auth)
+ - Reverse sync Supabase -> IndexedDB
+ - Zero dependency on store structure
+*/
 
-    const originalPut = IDBObjectStore.prototype.put;
-    const originalAdd = IDBObjectStore.prototype.add;
-    const originalDelete = IDBObjectStore.prototype.delete;
+(function(){
+  if (!window.indexedDB || !window.supabase) return;
 
-    IDBObjectStore.prototype.put = function(value, key) {
-        const req = originalPut.call(this, value, key);
-        const storeName = this.name;
-        req.onsuccess = async (e) => {
-            const effectiveKey = e.target.result;
-            if (value && !value.id) value.id = effectiveKey;
-            await syncToSupabase(storeName, effectiveKey, value, false);
-        };
-        return req;
+  const SUPA_URL = window.SUPABASE_URL || localStorage.getItem('SUPABASE_URL');
+  const SUPA_KEY = window.SUPABASE_ANON_KEY || localStorage.getItem('SUPABASE_ANON_KEY');
+  if(!SUPA_URL || !SUPA_KEY) return;
+
+  const sb = supabase.createClient(SUPA_URL, SUPA_KEY);
+  let currentUser = null;
+
+  sb.auth.getUser().then(r=>{ currentUser = r.data?.user || null; if(currentUser) pullFromSupabase(); });
+
+  const origOpen = indexedDB.open.bind(indexedDB);
+
+  indexedDB.open = function(name, version){
+    const req = origOpen(name, version);
+    req.addEventListener('success', ()=>hookDB(req.result));
+    return req;
+  };
+
+  function hookDB(db){
+    const origTxn = db.transaction.bind(db);
+    db.transaction = function(stores, mode){
+      const tx = origTxn(stores, mode);
+      const origStore = tx.objectStore.bind(tx);
+      tx.objectStore = function(storeName){
+        const store = origStore(storeName);
+        wrapStore(store, storeName);
+        return store;
+      };
+      return tx;
     };
+  }
 
-    IDBObjectStore.prototype.add = function(value, key) {
-        const req = originalAdd.call(this, value, key);
-        const storeName = this.name;
-        req.onsuccess = async (e) => {
-            const effectiveKey = e.target.result;
-            if (value && !value.id) value.id = effectiveKey;
-            await syncToSupabase(storeName, effectiveKey, value, false);
-        };
-        return req;
-    };
-
-    IDBObjectStore.prototype.delete = function(key) {
-        const req = originalDelete.call(this, key);
-        const storeName = this.name;
-        req.onsuccess = async () => {
-            await syncToSupabase(storeName, key, null, true);
-        };
-        return req;
-    };
-
-    async function syncToSupabase(storeName, localId, payload, isDeleted) {
-        try {
-            if (!window.supabaseClient) return;
-            const { data: { session } } = await supabaseClient.auth.getSession();
-            if (!session) return;
-
-            const record = {
-                user_id: session.user.id,
-                store_name: storeName,
-                local_id: String(localId),
-                payload: isDeleted ? null : payload,
-                deleted_at: isDeleted ? new Date().toISOString() : null,
-                updated_at: new Date().toISOString()
-            };
-
-            const { error } = await supabaseClient
-                .from(SYNC_TABLE)
-                .upsert(record, { onConflict: 'user_id,store_name,local_id' });
-
-            if (error) console.error(error);
-        } catch (e) {
-            console.error(e);
+  function wrapStore(store, storeName){
+    ['add','put','delete','clear'].forEach(fn=>{
+      if(!store[fn]) return;
+      const orig = store[fn].bind(store);
+      store[fn] = function(value, key){
+        const res = orig(value, key);
+        if(fn === 'clear'){
+          markDeleted(storeName, '__ALL__');
+        } else if(fn === 'delete'){
+          markDeleted(storeName, key);
+        } else {
+          pushChange(storeName, key, value);
         }
-    }
+        return res;
+      };
+    });
+  }
 
-    setTimeout(async () => {
-        if (!window.indexedDB || !window.DB_NAME) return;
-        const { data: { session } } = await supabaseClient.auth.getSession();
-        if (!session) return;
+  async function pushChange(store, key, value){
+    if(!currentUser) return;
+    await sb.from('sync_store').upsert({
+      user_id: currentUser.id,
+      store,
+      record_key: String(key),
+      payload: value,
+      deleted: false,
+      updated_at: new Date().toISOString()
+    },{onConflict:'user_id,store,record_key'});
+  }
 
-        const req = indexedDB.open(DB_NAME, DB_VERSION || undefined);
-        req.onsuccess = (e) => {
-            const db = e.target.result;
-            [...db.objectStoreNames].forEach(storeName => {
-                const tx = db.transaction(storeName, 'readonly');
-                const store = tx.objectStore(storeName);
-                const all = store.getAll();
-                all.onsuccess = async () => {
-                    for (const item of all.result) {
-                        await syncToSupabase(storeName, item.id, item, false);
-                    }
-                };
-            });
-        };
-    }, 4000);
-}
-document.addEventListener('DOMContentLoaded', startLegacySync);
+  async function markDeleted(store, key){
+    if(!currentUser) return;
+    await sb.from('sync_store').upsert({
+      user_id: currentUser.id,
+      store,
+      record_key: String(key),
+      payload: null,
+      deleted: true,
+      updated_at: new Date().toISOString()
+    },{onConflict:'user_id,store,record_key'});
+  }
+
+  async function pullFromSupabase(){
+    const {data} = await sb.from('sync_store').select('*').eq('user_id', currentUser.id);
+    if(!data) return;
+
+    data.forEach(row=>{
+      const openReq = origOpen(row.store.split(':')[0]);
+      openReq.onsuccess = ()=>{
+        const db = openReq.result;
+        if(!db.objectStoreNames.contains(row.store)) return;
+        const tx = db.transaction(row.store, 'readwrite');
+        const os = tx.objectStore(row.store);
+        if(row.deleted){
+          os.delete(row.record_key);
+        } else {
+          os.put(row.payload, row.record_key);
+        }
+      };
+    });
+  }
+
+  setInterval(()=>{ if(currentUser) pullFromSupabase(); }, 15000);
+})();
 </script>
+<!-- ====================== END SYNC LAYER ====================== -->
 
 </body>
 </html>
