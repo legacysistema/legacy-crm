@@ -3278,15 +3278,16 @@ const globalConfig = {
     </script>
 <script>
 /**
- * 🚀 UNIVERSAL IDB <-> SUPABASE SYNC ADAPTER
- * - Normaliza DB (rc_crm_db)
- * - Recria stores automaticamente no login
- * - Não quebra ao apagar histórico
+ * 🚀 UNIVERSAL IDB <-> SUPABASE SYNC ADAPTER (FIXED)
+ * - rc_crm_db como banco canônico
+ * - Sync real PC <-> Celular
+ * - Seguro ao apagar histórico
  */
+
 (async function () {
 
   /* ================================
-     1. CONFIGURAÇÕES GLOBAIS
+     1. CONFIG
   ================================= */
   const SYNC_TABLE = 'indexeddb_sync';
   const CANONICAL_DB = 'rc_crm_db';
@@ -3295,6 +3296,7 @@ const globalConfig = {
 
   const DEVICE_ID = crypto.randomUUID();
   let isReplicating = false;
+  let syncStarted = false;
 
   const STORES = {
     contacts: { keyPath: 'id', autoIncrement: true },
@@ -3302,15 +3304,16 @@ const globalConfig = {
     movements: { keyPath: 'id', autoIncrement: true },
     albums: { keyPath: 'id', autoIncrement: true },
     eventTypes: { keyPath: 'id', autoIncrement: true },
-    customReports: { keyPath: 'id', autoIncrement: true }
+    customReports: { keyPath: 'id', autoIncrement: true },
+    kv: {}
   };
 
-  const getSupabaseClient = () => window.supabaseClient || window.supabase;
+  const getClient = () => window.supabaseClient || window.supabase;
 
   const waitForSupabase = () =>
     new Promise(resolve => {
       const check = () =>
-        getSupabaseClient() ? resolve(getSupabaseClient()) : setTimeout(check, 100);
+        getClient() ? resolve(getClient()) : setTimeout(check, 100);
       check();
     });
 
@@ -3322,15 +3325,14 @@ const globalConfig = {
   ================================= */
   async function getUserId() {
     const { data } = await client.auth.getSession();
-    return data.session?.user?.id || null;
+    return data?.session?.user?.id || null;
   }
 
-  function parseKey(key) {
-    return !isNaN(key) && !isNaN(parseFloat(key)) ? Number(key) : key;
-  }
+  const parseKey = k =>
+    !isNaN(k) && k !== null && k !== '' ? Number(k) : k;
 
   /* ================================
-     3. GARANTIA DE BANCO + STORES
+     3. DB BOOTSTRAP
   ================================= */
   function ensureDatabase(dbName) {
     return new Promise(resolve => {
@@ -3362,7 +3364,7 @@ const globalConfig = {
   }
 
   /* ================================
-     4. INTERCEPTAÇÃO (LOCAL → CLOUD)
+     4. INTERCEPTAÇÃO IDB → CLOUD
   ================================= */
   const original = {
     put: IDBObjectStore.prototype.put,
@@ -3391,31 +3393,31 @@ const globalConfig = {
   async function handleWrite(store, method, value, key, req) {
     if (isReplicating) return;
 
-    const storeName = store.name;
-    const dbName = CANONICAL_DB;
-
     req.onsuccess = async e => {
-      const actualKey = key ?? e.target.result;
       const userId = await getUserId();
       if (!userId) return;
 
+      const actualKey = key ?? e.target.result;
+
       await client.from(SYNC_TABLE).upsert({
         user_id: userId,
-        db_name: dbName,
-        store_name: storeName,
+        db_name: CANONICAL_DB,
+        store_name: store.name,
         record_key: String(actualKey),
         record_value: method === 'delete' ? null : value,
         is_deleted: method === 'delete',
         device_id: DEVICE_ID,
         updated_at: new Date().toISOString()
       }, {
-        onConflict: 'user_id, db_name, store_name, record_key'
+        onConflict: 'user_id,db_name,store_name,record_key'
       });
+
+      console.log('☁️ PUSH:', store.name, actualKey);
     };
   }
 
   /* ================================
-     5. REPLICAÇÃO (CLOUD → LOCAL)
+     5. CLOUD → IDB
   ================================= */
   function applyBatch(records) {
     const req = indexedDB.open(CANONICAL_DB);
@@ -3437,20 +3439,38 @@ const globalConfig = {
       valid.forEach(r => {
         const store = tx.objectStore(r.store_name);
         const key = parseKey(r.record_key);
-        r.is_deleted ? store.delete(key) : store.put(r.record_value, key);
+        r.is_deleted
+          ? store.delete(key)
+          : store.put(r.record_value, key);
       });
 
-      tx.oncomplete = () => { isReplicating = false; db.close(); };
-      tx.onerror = () => { isReplicating = false; db.close(); };
+      tx.oncomplete = () => {
+        isReplicating = false;
+        db.close();
+        console.log('📥 PULL aplicado:', valid.length);
+      };
+
+      tx.onerror = () => {
+        isReplicating = false;
+        db.close();
+      };
     };
   }
 
   /* ================================
-     6. CICLO DE SYNC
+     6. CICLO DE SYNC (GLOBAL)
   ================================= */
-  async function startSync() {
+  window.startSyncCycle = async function () {
+    if (syncStarted) return;
+    syncStarted = true;
+
     const userId = await getUserId();
-    if (!userId) return;
+    if (!userId) {
+      syncStarted = false;
+      return;
+    }
+
+    console.log('🔄 Sync iniciado para usuário:', userId);
 
     await bootstrapDatabases();
 
@@ -3462,7 +3482,7 @@ const globalConfig = {
 
     if (data?.length) applyBatch(data);
 
-    client.channel('idb-sync')
+    client.channel('idb-sync-' + userId)
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
@@ -3472,20 +3492,26 @@ const globalConfig = {
         if (payload.new?.device_id !== DEVICE_ID) {
           applyBatch([payload.new]);
         }
-      }).subscribe();
-  }
+      })
+      .subscribe();
+  };
 
   /* ================================
      7. INIT
   ================================= */
-  client.auth.onAuthStateChange(async (evt) => {
-    if (evt === 'SIGNED_IN') startSync();
+  client.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_IN' && session?.user) {
+      window.startSyncCycle();
+    }
   });
 
-  if (await getUserId()) startSync();
+  if (await getUserId()) {
+    window.startSyncCycle();
+  }
 
 })();
 </script>
+
 
 
  
