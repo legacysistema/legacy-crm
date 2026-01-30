@@ -3056,19 +3056,17 @@
         // window.onload = app.init;
         
 /* =====================================================
-   IndexedDB Persistence Layer
-   Banco: rc_crm_db
-   MIGRAÇÃO AUTOMÁTICA DE localStorage
-   NÃO ALTERA FLUXO EXISTENTE
+   IndexedDB Persistence Layer (CORRIGIDO)
 ===================================================== */
 
 const RC_DB_NAME = "rc_crm_db";
 const RC_DB_VERSION = 1;
+
 let rcDB = null;
 let rcMemoryCache = {};
 
 /* ---------- INIT ---------- */
-function dbInit() {
+async function dbInit() {
     return new Promise((resolve, reject) => {
         const request = indexedDB.open(RC_DB_NAME, RC_DB_VERSION);
 
@@ -3083,54 +3081,71 @@ function dbInit() {
                 "settings",
                 "financeiro",
                 "funnels",
-                "followups"
+                "followups",
+                "kv"
             ];
 
             stores.forEach(store => {
                 if (!db.objectStoreNames.contains(store)) {
-                    db.createObjectStore(store, { keyPath: "id", autoIncrement: true });
+                    db.createObjectStore(
+                        store,
+                        store === "kv"
+                            ? undefined
+                            : { keyPath: "id", autoIncrement: true }
+                    );
                 }
             });
-
-            if (!db.objectStoreNames.contains("kv")) {
-                db.createObjectStore("kv");
-            }
         };
 
         request.onsuccess = () => {
             rcDB = request.result;
-            resolve();
+            resolve(rcDB);
         };
 
-        request.onerror = () => reject("Erro ao abrir IndexedDB");
+        request.onerror = () => reject(request.error);
     });
+}
+
+/* ---------- GARANTIA DE DB ---------- */
+async function ensureDB(store) {
+    if (!rcDB || !rcDB.objectStoreNames.contains(store)) {
+        await indexedDB.deleteDatabase(RC_DB_NAME);
+        rcDB = null;
+        await dbInit();
+    }
 }
 
 /* ---------- UTILITÁRIOS ---------- */
-function dbSet(store, key, value) {
+async function dbSet(store, key, value) {
+    await ensureDB(store);
+
     return new Promise((resolve, reject) => {
-        const tx = rcDB.transaction("kv", "readwrite");
-        const os = tx.objectStore("kv");
+        const tx = rcDB.transaction(store, "readwrite");
+        const os = tx.objectStore(store);
         os.put(value, key);
         tx.oncomplete = () => resolve(true);
-        tx.onerror = () => reject(false);
+        tx.onerror = () => reject(tx.error);
     });
 }
 
-function dbGet(store, key) {
+async function dbGet(store, key) {
+    await ensureDB(store);
+
     return new Promise((resolve) => {
-        const tx = rcDB.transaction("kv", "readonly");
-        const os = tx.objectStore("kv");
+        const tx = rcDB.transaction(store, "readonly");
+        const os = tx.objectStore(store);
         const req = os.get(key);
         req.onsuccess = () => resolve(req.result ?? null);
         req.onerror = () => resolve(null);
     });
 }
 
-function dbDelete(store, key) {
+async function dbDelete(store, key) {
+    await ensureDB(store);
+
     return new Promise((resolve) => {
-        const tx = rcDB.transaction("kv", "readwrite");
-        tx.objectStore("kv").delete(key);
+        const tx = rcDB.transaction(store, "readwrite");
+        tx.objectStore(store).delete(key);
         tx.oncomplete = () => resolve(true);
     });
 }
@@ -3146,10 +3161,6 @@ async function migrateLocalStorage() {
 }
 
 /* ---------- OVERRIDE localStorage ---------- */
-/* NÃO ALTERA O SISTEMA EXISTENTE
-   Mantém API síncrona
-   Dados reais vão para IndexedDB
-*/
 (function overrideLocalStorage() {
     const originalSetItem = localStorage.setItem;
     const originalGetItem = localStorage.getItem;
@@ -3157,21 +3168,19 @@ async function migrateLocalStorage() {
 
     localStorage.setItem = function(key, value) {
         rcMemoryCache[key] = value;
-        dbSet("kv", key, value);
-        originalSetItem.call(this, key, value);
+        dbSet("kv", key, value).catch(console.error);
+        return originalSetItem.call(this, key, value);
     };
 
     localStorage.getItem = function(key) {
-        if (key in rcMemoryCache) {
-            return rcMemoryCache[key];
-        }
+        if (key in rcMemoryCache) return rcMemoryCache[key];
         return originalGetItem.call(this, key);
     };
 
     localStorage.removeItem = function(key) {
         delete rcMemoryCache[key];
-        dbDelete("kv", key);
-        originalRemoveItem.call(this, key);
+        dbDelete("kv", key).catch(console.error);
+        return originalRemoveItem.call(this, key);
     };
 })();
 
@@ -3270,182 +3279,215 @@ const globalConfig = {
 <script>
 /**
  * 🚀 UNIVERSAL IDB <-> SUPABASE SYNC ADAPTER
- * Intercepta globalmente operações do IndexedDB e sincroniza com Supabase
+ * - Normaliza DB (rc_crm_db)
+ * - Recria stores automaticamente no login
+ * - Não quebra ao apagar histórico
  */
-(async function() {
-    // --- 1. CONFIGURAÇÕES E ESTADO ---
-    const SYNC_TABLE = 'indexeddb_sync';
-    const DEVICE_ID = crypto.randomUUID();
-    let isReplicating = false; // Semáforo para evitar loops de replicação
+(async function () {
 
-    const getSupabaseClient = () => window.supabaseClient || window.supabase;
+  /* ================================
+     1. CONFIGURAÇÕES GLOBAIS
+  ================================= */
+  const SYNC_TABLE = 'indexeddb_sync';
+  const CANONICAL_DB = 'rc_crm_db';
+  const MIRROR_DB = 'RCSistemasDB';
+  const DB_VERSION = 1;
 
-    // Aguarda o cliente Supabase estar disponível
-    const waitForSupabase = () => new Promise(resolve => {
-        const check = () => {
-            if (getSupabaseClient()) resolve(getSupabaseClient());
-            else setTimeout(check, 100);
-        };
-        check();
+  const DEVICE_ID = crypto.randomUUID();
+  let isReplicating = false;
+
+  const STORES = {
+    contacts: { keyPath: 'id', autoIncrement: true },
+    events: { keyPath: 'id', autoIncrement: true },
+    movements: { keyPath: 'id', autoIncrement: true },
+    albums: { keyPath: 'id', autoIncrement: true },
+    eventTypes: { keyPath: 'id', autoIncrement: true },
+    customReports: { keyPath: 'id', autoIncrement: true }
+  };
+
+  const getSupabaseClient = () => window.supabaseClient || window.supabase;
+
+  const waitForSupabase = () =>
+    new Promise(resolve => {
+      const check = () =>
+        getSupabaseClient() ? resolve(getSupabaseClient()) : setTimeout(check, 100);
+      check();
     });
 
-    const client = await waitForSupabase();
-    console.log("🛠️ Interceptador de IndexedDB Ativado!");
+  const client = await waitForSupabase();
+  console.log('🛠️ Universal IndexedDB Sync Ativado');
 
-    // --- 2. FUNÇÕES AUXILIARES ---
-    async function getUserId() {
-        const { data } = await client.auth.getSession();
-        return data.session?.user?.id;
-    }
-
-    function parseKey(key) {
-        return !isNaN(key) && !isNaN(parseFloat(key)) ? Number(key) : key;
-    }
-
-    // --- 3. INTERCEPTAÇÃO (OUTBOUND: LOCAL -> NUVEM) ---
-    const originalMethods = {
-        put: IDBObjectStore.prototype.put,
-        add: IDBObjectStore.prototype.add,
-        delete: IDBObjectStore.prototype.delete
-    };
-
-    IDBObjectStore.prototype.put = function(value, key) {
-        const req = originalMethods.put.apply(this, arguments);
-        handleWriteOp(this, 'put', value, key, req);
-        return req;
-    };
-
-    IDBObjectStore.prototype.add = function(value, key) {
-        const req = originalMethods.add.apply(this, arguments);
-        handleWriteOp(this, 'add', value, key, req);
-        return req;
-    };
-
-    IDBObjectStore.prototype.delete = function(key) {
-        const req = originalMethods.delete.apply(this, arguments);
-        handleWriteOp(this, 'delete', null, key, req);
-        return req;
-    };
-
-    async function handleWriteOp(store, method, value, key, request) {
-        if (isReplicating) return; // Se a escrita veio da nuvem, não reenvia
-
-        const dbName = store.transaction.db.name;
-        const storeName = store.name;
-
-        request.onsuccess = async (e) => {
-            const actualKey = key || e.target.result;
-            const userId = await getUserId();
-            if (!userId) return;
-
-            const payload = {
-                user_id: userId,
-                db_name: dbName,
-                store_name: storeName,
-                record_key: String(actualKey),
-                record_value: method === 'delete' ? null : value,
-                is_deleted: method === 'delete',
-                device_id: DEVICE_ID,
-                updated_at: new Date().toISOString()
-            };
-
-            await client.from(SYNC_TABLE).upsert(payload, { 
-                onConflict: 'user_id, db_name, store_name, record_key' 
-            });
-        };
-    }
-
-    // --- 4. REPLICAÇÃO (INBOUND: NUVEM -> LOCAL) ---
-    function applyBatch(dbName, records) {
-        const request = indexedDB.open(dbName);
-
-        request.onsuccess = (e) => {
-            const db = e.target.result;
-            const availableStores = Array.from(db.objectStoreNames);
-            
-            // Filtra registros que existem neste banco
-            const validRecords = records.filter(r => availableStores.includes(r.store_name));
-            if (validRecords.length === 0) { db.close(); return; }
-
-            const activeStores = [...new Set(validRecords.map(r => r.store_name))];
-            const tx = db.transaction(activeStores, 'readwrite');
-            
-            isReplicating = true; // Bloqueia o interceptador
-
-            validRecords.forEach(record => {
-                try {
-                    const store = tx.objectStore(record.store_name);
-                    const key = parseKey(record.record_key);
-                    
-                    if (record.is_deleted) store.delete(key);
-                    else store.put(record.record_value, key);
-                } catch (err) {
-                    console.error(`Falha no sync de ${record.store_name}:`, err);
-                }
-            });
-
-            tx.oncomplete = () => { isReplicating = false; db.close(); };
-            tx.onerror = () => { isReplicating = false; db.close(); };
-        };
-    }
-
-    async function startSyncCycle() {
-        const userId = await getUserId();
-        if (!userId) return;
-
-        console.log("🔄 Sincronizando com a nuvem...");
-
-        // A. Carga Inicial (Bootstrap)
-        const { data: records } = await client
-            .from(SYNC_TABLE)
-            .select('*')
-            .eq('user_id', userId);
-        if (records && records.length > 0) {
-            const groups = records.reduce((acc, r) => {
-                (acc[r.db_name] = acc[r.db_name] || []).push(r);
-                return acc;
-            }, {});
-            for (const db in groups) applyBatch(db, groups[db]);
-        }
-
-        // B. Realtime (Escuta mudanças de outros dispositivos)
-        client.channel('idb-sync-channel')
-            .on('postgres_changes', { 
-                event: '*', 
-                schema: 'public', 
-                table: SYNC_TABLE, 
-                filter: `user_id=eq.${userId}` 
-            }, (payload) => {
-                if (payload.new && payload.new.device_id !== DEVICE_ID) {
-                    applyBatch(payload.new.db_name, [payload.new]);
-                }
-            }).subscribe();
-    }
-
-    // --- 5. INICIALIZAÇÃO ---
-    client.auth.onAuthStateChange((event) => {
-        if (event === 'SIGNED_IN') startSyncCycle();
-    });
-
-    if (await getUserId()) startSyncCycle();
-
-})();
-
-async function getUserId() {
-  const { data: { user }, error } = await supabase.auth.getUser();
-
-  if (error || !user) {
-    console.error("Usuário não autenticado");
-    return null;
+  /* ================================
+     2. AUTH
+  ================================= */
+  async function getUserId() {
+    const { data } = await client.auth.getSession();
+    return data.session?.user?.id || null;
   }
 
-  return user.id;
-}
+  function parseKey(key) {
+    return !isNaN(key) && !isNaN(parseFloat(key)) ? Number(key) : key;
+  }
 
-function uuidv4() {
-  return crypto.randomUUID();
-}
+  /* ================================
+     3. GARANTIA DE BANCO + STORES
+  ================================= */
+  function ensureDatabase(dbName) {
+    return new Promise(resolve => {
+      const req = indexedDB.open(dbName, DB_VERSION);
+
+      req.onupgradeneeded = e => {
+        const db = e.target.result;
+        Object.entries(STORES).forEach(([name, cfg]) => {
+          if (!db.objectStoreNames.contains(name)) {
+            db.createObjectStore(name, cfg);
+            console.warn(`📦 Store criada: ${dbName}.${name}`);
+          }
+        });
+      };
+
+      req.onsuccess = e => {
+        e.target.result.close();
+        resolve(true);
+      };
+
+      req.onerror = () => resolve(false);
+    });
+  }
+
+  async function bootstrapDatabases() {
+    await ensureDatabase(CANONICAL_DB);
+    await ensureDatabase(MIRROR_DB);
+    console.log('✅ rc_crm_db e RCSistemasDB garantidos');
+  }
+
+  /* ================================
+     4. INTERCEPTAÇÃO (LOCAL → CLOUD)
+  ================================= */
+  const original = {
+    put: IDBObjectStore.prototype.put,
+    add: IDBObjectStore.prototype.add,
+    delete: IDBObjectStore.prototype.delete
+  };
+
+  IDBObjectStore.prototype.put = function (v, k) {
+    const r = original.put.apply(this, arguments);
+    handleWrite(this, 'put', v, k, r);
+    return r;
+  };
+
+  IDBObjectStore.prototype.add = function (v, k) {
+    const r = original.add.apply(this, arguments);
+    handleWrite(this, 'add', v, k, r);
+    return r;
+  };
+
+  IDBObjectStore.prototype.delete = function (k) {
+    const r = original.delete.apply(this, arguments);
+    handleWrite(this, 'delete', null, k, r);
+    return r;
+  };
+
+  async function handleWrite(store, method, value, key, req) {
+    if (isReplicating) return;
+
+    const storeName = store.name;
+    const dbName = CANONICAL_DB;
+
+    req.onsuccess = async e => {
+      const actualKey = key ?? e.target.result;
+      const userId = await getUserId();
+      if (!userId) return;
+
+      await client.from(SYNC_TABLE).upsert({
+        user_id: userId,
+        db_name: dbName,
+        store_name: storeName,
+        record_key: String(actualKey),
+        record_value: method === 'delete' ? null : value,
+        is_deleted: method === 'delete',
+        device_id: DEVICE_ID,
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: 'user_id, db_name, store_name, record_key'
+      });
+    };
+  }
+
+  /* ================================
+     5. REPLICAÇÃO (CLOUD → LOCAL)
+  ================================= */
+  function applyBatch(records) {
+    const req = indexedDB.open(CANONICAL_DB);
+
+    req.onsuccess = e => {
+      const db = e.target.result;
+      const stores = Array.from(db.objectStoreNames);
+
+      const valid = records.filter(r => stores.includes(r.store_name));
+      if (!valid.length) return db.close();
+
+      const tx = db.transaction(
+        [...new Set(valid.map(r => r.store_name))],
+        'readwrite'
+      );
+
+      isReplicating = true;
+
+      valid.forEach(r => {
+        const store = tx.objectStore(r.store_name);
+        const key = parseKey(r.record_key);
+        r.is_deleted ? store.delete(key) : store.put(r.record_value, key);
+      });
+
+      tx.oncomplete = () => { isReplicating = false; db.close(); };
+      tx.onerror = () => { isReplicating = false; db.close(); };
+    };
+  }
+
+  /* ================================
+     6. CICLO DE SYNC
+  ================================= */
+  async function startSync() {
+    const userId = await getUserId();
+    if (!userId) return;
+
+    await bootstrapDatabases();
+
+    const { data } = await client
+      .from(SYNC_TABLE)
+      .select('*')
+      .eq('user_id', userId)
+      .eq('db_name', CANONICAL_DB);
+
+    if (data?.length) applyBatch(data);
+
+    client.channel('idb-sync')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: SYNC_TABLE,
+        filter: `user_id=eq.${userId}`
+      }, payload => {
+        if (payload.new?.device_id !== DEVICE_ID) {
+          applyBatch([payload.new]);
+        }
+      }).subscribe();
+  }
+
+  /* ================================
+     7. INIT
+  ================================= */
+  client.auth.onAuthStateChange(async (evt) => {
+    if (evt === 'SIGNED_IN') startSync();
+  });
+
+  if (await getUserId()) startSync();
+
+})();
 </script>
+
+
  
 </body>
 </html>
