@@ -3278,10 +3278,10 @@ const globalConfig = {
     </script>
 <script>
 /**
- * 🚀 UNIVERSAL IDB <-> SUPABASE SYNC ADAPTER (FINAL)
- * - rc_crm_db canônico
- * - Sync PC <-> Celular
- * - Resiliente a apagar histórico
+ * 🚀 UNIVERSAL IDB <-> SUPABASE SYNC ADAPTER (FIXED)
+ * - rc_crm_db como banco canônico
+ * - Sync real PC <-> Celular
+ * - Seguro ao apagar histórico
  */
 
 (async function () {
@@ -3343,6 +3343,7 @@ const globalConfig = {
         Object.entries(STORES).forEach(([name, cfg]) => {
           if (!db.objectStoreNames.contains(name)) {
             db.createObjectStore(name, cfg);
+            console.warn(`📦 Store criada: ${dbName}.${name}`);
           }
         });
       };
@@ -3359,7 +3360,7 @@ const globalConfig = {
   async function bootstrapDatabases() {
     await ensureDatabase(CANONICAL_DB);
     await ensureDatabase(MIRROR_DB);
-    console.log('✅ Bancos garantidos');
+    console.log('✅ rc_crm_db e RCSistemasDB garantidos');
   }
 
   /* ================================
@@ -3389,47 +3390,31 @@ const globalConfig = {
     return r;
   };
 
- /* ================================
-   PATCH SEGURO — NÃO QUEBRA NADA
-================================ */
+  async function handleWrite(store, method, value, key, req) {
+    if (isReplicating) return;
 
-async function handleWrite(store, method, value, key, req) {
-  if (isReplicating) return;
+    req.onsuccess = async e => {
+      const userId = await getUserId();
+      if (!userId) return;
 
-  // 🚫 NÃO sincroniza dados sensíveis de auth / device
-  if (
-    store.name === 'kv' &&
-    typeof key === 'string' &&
-    (
-      key.startsWith('sb-') ||
-      key.startsWith('__')
-    )
-  ) {
-    return;
+      const actualKey = key ?? e.target.result;
+
+      await client.from(SYNC_TABLE).upsert({
+        user_id: userId,
+        db_name: CANONICAL_DB,
+        store_name: store.name,
+        record_key: String(actualKey),
+        record_value: method === 'delete' ? null : value,
+        is_deleted: method === 'delete',
+        device_id: DEVICE_ID,
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: 'user_id,db_name,store_name,record_key'
+      });
+
+      console.log('☁️ PUSH:', store.name, actualKey);
+    };
   }
-
-  req.onsuccess = async e => {
-    const userId = await getUserId();
-    if (!userId) return;
-
-    const actualKey = key ?? e.target.result;
-
-    await client.from(SYNC_TABLE).upsert({
-      user_id: userId,
-      db_name: CANONICAL_DB,
-      store_name: store.name,
-      record_key: String(actualKey),
-      record_value: method === 'delete' ? null : value,
-      is_deleted: method === 'delete',
-      device_id: DEVICE_ID,
-      updated_at: new Date().toISOString()
-    }, {
-      onConflict: 'user_id,db_name,store_name,record_key'
-    });
-
-    console.log('☁️ PUSH:', store.name, actualKey);
-  };
-}
 
   /* ================================
      5. CLOUD → IDB
@@ -3454,7 +3439,9 @@ async function handleWrite(store, method, value, key, req) {
       valid.forEach(r => {
         const store = tx.objectStore(r.store_name);
         const key = parseKey(r.record_key);
-        r.is_deleted ? store.delete(key) : store.put(r.record_value, key);
+        r.is_deleted
+          ? store.delete(key)
+          : store.put(r.record_value, key);
       });
 
       tx.oncomplete = () => {
@@ -3462,18 +3449,28 @@ async function handleWrite(store, method, value, key, req) {
         db.close();
         console.log('📥 PULL aplicado:', valid.length);
       };
+
+      tx.onerror = () => {
+        isReplicating = false;
+        db.close();
+      };
     };
   }
 
   /* ================================
-     6. SYNC CYCLE
+     6. CICLO DE SYNC (GLOBAL)
   ================================= */
-  async function startSyncCycle() {
+  window.startSyncCycle = async function () {
     if (syncStarted) return;
     syncStarted = true;
 
     const userId = await getUserId();
-    if (!userId) return;
+    if (!userId) {
+      syncStarted = false;
+      return;
+    }
+
+    console.log('🔄 Sync iniciado para usuário:', userId);
 
     await bootstrapDatabases();
 
@@ -3497,32 +3494,23 @@ async function handleWrite(store, method, value, key, req) {
         }
       })
       .subscribe();
-  }
+  };
 
   /* ================================
-     7. INIT CORRETO
+     7. INIT
   ================================= */
-  async function fullStartupSync() {
-    const uid = await getUserId();
-    if (!uid) return;
-
-    console.log('🔐 Usuário logado:', uid);
-    await startSyncCycle();
-  }
-
-  // expõe para debug/mobile
-  window.__RC_START_SYNC__ = fullStartupSync;
-
-  client.auth.onAuthStateChange(evt => {
-    if (evt === 'SIGNED_IN') fullStartupSync();
+  client.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_IN' && session?.user) {
+      window.startSyncCycle();
+    }
   });
 
-  // fallback
-  fullStartupSync();
+  if (await getUserId()) {
+    window.startSyncCycle();
+  }
 
-})(); // 🔥 FECHAMENTO FINAL CORRETO
+})();
 </script>
-
 
 
 
