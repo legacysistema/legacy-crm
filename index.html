@@ -3268,185 +3268,7 @@ const globalConfig = {
     });
     </script>
 <script>
-/**
- * 🚀 UNIVERSAL IDB <-> SUPABASE SYNC ADAPTER
- * Intercepta globalmente operações do IndexedDB e sincroniza com Supabase
- */
-(async function() {
-    // --- 1. CONFIGURAÇÕES E ESTADO ---
-    const SYNC_TABLE = 'indexeddb_sync';
-    const DEVICE_ID = crypto.randomUUID();
-    let isReplicating = false; // Semáforo para evitar loops de replicação
-
-    const getSupabaseClient = () => window.supabaseClient || window.supabase;
-
-    // Aguarda o cliente Supabase estar disponível
-    const waitForSupabase = () => new Promise(resolve => {
-        const check = () => {
-            if (getSupabaseClient()) resolve(getSupabaseClient());
-            else setTimeout(check, 100);
-        };
-        check();
-    });
-
-    const client = await waitForSupabase();
-    console.log("🛠️ Interceptador de IndexedDB Ativado!");
-
-    // --- 2. FUNÇÕES AUXILIARES ---
-    async function getUserId() {
-        const { data } = await client.auth.getSession();
-        return data.session?.user?.id;
-    }
-
-    function parseKey(key) {
-        return !isNaN(key) && !isNaN(parseFloat(key)) ? Number(key) : key;
-    }
-
-    // --- 3. INTERCEPTAÇÃO (OUTBOUND: LOCAL -> NUVEM) ---
-    const originalMethods = {
-        put: IDBObjectStore.prototype.put,
-        add: IDBObjectStore.prototype.add,
-        delete: IDBObjectStore.prototype.delete
-    };
-
-    IDBObjectStore.prototype.put = function(value, key) {
-        const req = originalMethods.put.apply(this, arguments);
-        handleWriteOp(this, 'put', value, key, req);
-        return req;
-    };
-
-    IDBObjectStore.prototype.add = function(value, key) {
-        const req = originalMethods.add.apply(this, arguments);
-        handleWriteOp(this, 'add', value, key, req);
-        return req;
-    };
-
-    IDBObjectStore.prototype.delete = function(key) {
-        const req = originalMethods.delete.apply(this, arguments);
-        handleWriteOp(this, 'delete', null, key, req);
-        return req;
-    };
-
-    async function handleWriteOp(store, method, value, key, request) {
-        if (isReplicating) return; // Se a escrita veio da nuvem, não reenvia
-
-        const dbName = store.transaction.db.name;
-        const storeName = store.name;
-
-        request.onsuccess = async (e) => {
-            const actualKey = key || e.target.result;
-            const userId = await getUserId();
-            if (!userId) return;
-
-            const payload = {
-                user_id: userId,
-                db_name: dbName,
-                store_name: storeName,
-                record_key: String(actualKey),
-                record_value: method === 'delete' ? null : value,
-                is_deleted: method === 'delete',
-                device_id: DEVICE_ID,
-                updated_at: new Date().toISOString()
-            };
-
-            await client.from(SYNC_TABLE).upsert(payload, { 
-                onConflict: 'user_id, db_name, store_name, record_key' 
-            });
-        };
-    }
-
-    // --- 4. REPLICAÇÃO (INBOUND: NUVEM -> LOCAL) ---
-    function applyBatch(dbName, records) {
-        const request = indexedDB.open(dbName);
-
-        request.onsuccess = (e) => {
-            const db = e.target.result;
-            const availableStores = Array.from(db.objectStoreNames);
-            
-            // Filtra registros que existem neste banco
-            const validRecords = records.filter(r => availableStores.includes(r.store_name));
-            if (validRecords.length === 0) { db.close(); return; }
-
-            const activeStores = [...new Set(validRecords.map(r => r.store_name))];
-            const tx = db.transaction(activeStores, 'readwrite');
-            
-            isReplicating = true; // Bloqueia o interceptador
-
-            validRecords.forEach(record => {
-                try {
-                    const store = tx.objectStore(record.store_name);
-                    const key = parseKey(record.record_key);
-                    
-                    if (record.is_deleted) store.delete(key);
-                    else store.put(record.record_value, key);
-                } catch (err) {
-                    console.error(`Falha no sync de ${record.store_name}:`, err);
-                }
-            });
-
-            tx.oncomplete = () => { isReplicating = false; db.close(); };
-            tx.onerror = () => { isReplicating = false; db.close(); };
-        };
-    }
-
-    async function startSyncCycle() {
-        const userId = await getUserId();
-        if (!userId) return;
-
-        console.log("🔄 Sincronizando com a nuvem...");
-
-        // A. Carga Inicial (Bootstrap)
-        const { data: records } = await client
-            .from(SYNC_TABLE)
-            .select('*')
-            .eq('user_id', userId);
-        if (records && records.length > 0) {
-            const groups = records.reduce((acc, r) => {
-                (acc[r.db_name] = acc[r.db_name] || []).push(r);
-                return acc;
-            }, {});
-            for (const db in groups) applyBatch(db, groups[db]);
-        }
-
-        // B. Realtime (Escuta mudanças de outros dispositivos)
-        client.channel('idb-sync-channel')
-            .on('postgres_changes', { 
-                event: '*', 
-                schema: 'public', 
-                table: SYNC_TABLE, 
-                filter: `user_id=eq.${userId}` 
-            }, (payload) => {
-                if (payload.new && payload.new.device_id !== DEVICE_ID) {
-                    applyBatch(payload.new.db_name, [payload.new]);
-                }
-            }).subscribe();
-    }
-
-    // --- 5. INICIALIZAÇÃO ---
-    client.auth.onAuthStateChange((event) => {
-        if (event === 'SIGNED_IN') startSyncCycle();
-    });
-
-    if (await getUserId()) startSyncCycle();
-
-})();
-
-async function getUserId() {
-  const { data: { user }, error } = await supabase.auth.getUser();
-
-  if (error || !user) {
-    console.error("Usuário não autenticado");
-    return null;
-  }
-
-  return user.id;
-}
-
-function uuidv4() {
-  return crypto.randomUUID();
-}
-
-    <script>
+<script>
 /**
  * 🧱 GLOBAL INDEXEDDB BOOTSTRAP (INDEPENDENTE)
  * Garante existência dos bancos e stores mesmo após wipe do navegador
@@ -3456,56 +3278,204 @@ function uuidv4() {
   const DATABASES = [
     { name: 'rc_crm_db', version: 1 },
     { name: 'RCSistemasDB', version: 5 }
-  ]
+  ];
 
   const STORES = {
-    clientes:   { keyPath: 'id' },
-    pedidos:    { keyPath: 'id' },
-    produtos:   { keyPath: 'id' },
-    usuarios:   { keyPath: 'id' },
-    config:     { keyPath: 'key' },
-    meta:       { keyPath: 'id' }
-  }
+    clientes: { keyPath: 'id' },
+    pedidos:  { keyPath: 'id' },
+    produtos: { keyPath: 'id' },
+    usuarios: { keyPath: 'id' },
+    config:   { keyPath: 'key' },
+    meta:     { keyPath: 'id' }
+  };
 
   function ensureDatabase(dbName, version) {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(dbName, version)
+      const req = indexedDB.open(dbName, version);
 
       req.onupgradeneeded = e => {
-        const db = e.target.result
-
+        const db = e.target.result;
         for (const storeName in STORES) {
           if (!db.objectStoreNames.contains(storeName)) {
-            db.createObjectStore(storeName, STORES[storeName])
-            console.log(`🧱 [${dbName}] store criada: ${storeName}`)
+            db.createObjectStore(storeName, STORES[storeName]);
+            console.log(`🧱 [${dbName}] store criada: ${storeName}`);
           }
         }
-      }
+      };
 
       req.onsuccess = e => {
-        e.target.result.close()
-        resolve()
-      }
+        e.target.result.close();
+        resolve();
+      };
 
-      req.onerror = () => reject(req.error)
-    })
+      req.onerror = () => reject(req.error);
+    });
   }
 
-  async function bootstrap() {
+  (async function bootstrap() {
     try {
       for (const db of DATABASES) {
-        await ensureDatabase(db.name, db.version)
+        await ensureDatabase(db.name, db.version);
       }
-      console.log('✅ IndexedDB bootstrap concluído')
+      console.log('✅ IndexedDB bootstrap concluído');
     } catch (err) {
-      console.error('❌ Falha no bootstrap IndexedDB:', err)
+      console.error('❌ Falha no bootstrap IndexedDB:', err);
     }
+  })();
+})();
+    <script>
+/**
+ * 🚀 UNIVERSAL IDB <-> SUPABASE SYNC ADAPTER
+ * Intercepta globalmente operações do IndexedDB e sincroniza com Supabase
+ */
+(async function () {
+
+  const SYNC_TABLE = 'indexeddb_sync';
+  const DEVICE_ID = crypto.randomUUID();
+  let isReplicating = false;
+
+  const getSupabaseClient = () => window.supabaseClient || window.supabase;
+
+  const waitForSupabase = () =>
+    new Promise(resolve => {
+      const check = () => {
+        if (getSupabaseClient()) resolve(getSupabaseClient());
+        else setTimeout(check, 100);
+      };
+      check();
+    });
+
+  const client = await waitForSupabase();
+  console.log("🛠️ Interceptador de IndexedDB Ativado!");
+
+  async function getUserId() {
+    const { data } = await client.auth.getSession();
+    return data?.session?.user?.id || null;
   }
 
-  bootstrap()
-})()
-</script>
+  const parseKey = k =>
+    !isNaN(k) && !isNaN(parseFloat(k)) ? Number(k) : k;
 
+  const original = {
+    put: IDBObjectStore.prototype.put,
+    add: IDBObjectStore.prototype.add,
+    delete: IDBObjectStore.prototype.delete
+  };
+
+  IDBObjectStore.prototype.put = function (v, k) {
+    const r = original.put.apply(this, arguments);
+    handleWrite(this, 'put', v, k, r);
+    return r;
+  };
+
+  IDBObjectStore.prototype.add = function (v, k) {
+    const r = original.add.apply(this, arguments);
+    handleWrite(this, 'add', v, k, r);
+    return r;
+  };
+
+  IDBObjectStore.prototype.delete = function (k) {
+    const r = original.delete.apply(this, arguments);
+    handleWrite(this, 'delete', null, k, r);
+    return r;
+  };
+
+  async function handleWrite(store, method, value, key, req) {
+    if (isReplicating) return;
+
+    const dbName = store.transaction.db.name;
+    const storeName = store.name;
+
+    req.onsuccess = async e => {
+      const userId = await getUserId();
+      if (!userId) return;
+
+      const payload = {
+        user_id: userId,
+        db_name: dbName,
+        store_name: storeName,
+        record_key: String(key ?? e.target.result),
+        record_value: method === 'delete' ? null : value,
+        is_deleted: method === 'delete',
+        device_id: DEVICE_ID,
+        updated_at: new Date().toISOString()
+      };
+
+      await client
+        .from(SYNC_TABLE)
+        .upsert(payload, {
+          onConflict: 'user_id,db_name,store_name,record_key'
+        });
+    };
+  }
+
+  function applyBatch(dbName, records) {
+    const req = indexedDB.open(dbName);
+
+    req.onsuccess = e => {
+      const db = e.target.result;
+      const stores = Array.from(db.objectStoreNames);
+
+      const valid = records.filter(r =>
+        stores.includes(r.store_name)
+      );
+
+      if (!valid.length) return db.close();
+
+      const tx = db.transaction(
+        [...new Set(valid.map(r => r.store_name))],
+        'readwrite'
+      );
+
+      isReplicating = true;
+
+      valid.forEach(r => {
+        const store = tx.objectStore(r.store_name);
+        const key = parseKey(r.record_key);
+        r.is_deleted ? store.delete(key) : store.put(r.record_value, key);
+      });
+
+      tx.oncomplete = tx.onerror = () => {
+        isReplicating = false;
+        db.close();
+      };
+    };
+  }
+
+  async function startSync() {
+    const userId = await getUserId();
+    if (!userId) return;
+
+    console.log("🔄 Sincronizando com a nuvem...");
+
+    const { data } = await client
+      .from(SYNC_TABLE)
+      .select('*')
+      .eq('user_id', userId);
+
+    if (data?.length) {
+      const grouped = data.reduce((a, r) => {
+        (a[r.db_name] ||= []).push(r);
+        return a;
+      }, {});
+      Object.keys(grouped).forEach(db =>
+        applyBatch(db, grouped[db])
+      );
+    }
+
+    client.channel('idb-sync')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: SYNC_TABLE, filter: `user_id=eq.${userId}` },
+        p => p.new?.device_id !== DEVICE_ID && applyBatch(p.new.db_name, [p.new])
+      )
+      .subscribe();
+  }
+
+  client.auth.onAuthStateChange(e => e === 'SIGNED_IN' && startSync());
+  if (await getUserId()) startSync();
+
+})();
 </script>
  
 </body>
