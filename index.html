@@ -3445,6 +3445,67 @@ async function getUserId() {
 function uuidv4() {
   return crypto.randomUUID();
 }
+
+    <script>
+/**
+ * 🧱 GLOBAL INDEXEDDB BOOTSTRAP (INDEPENDENTE)
+ * Garante existência dos bancos e stores mesmo após wipe do navegador
+ * NÃO depende do sistema, Supabase ou login
+ */
+(function () {
+  const DATABASES = [
+    { name: 'rc_crm_db', version: 1 },
+    { name: 'RCSistemasDB', version: 5 }
+  ]
+
+  const STORES = {
+    clientes:   { keyPath: 'id' },
+    pedidos:    { keyPath: 'id' },
+    produtos:   { keyPath: 'id' },
+    usuarios:   { keyPath: 'id' },
+    config:     { keyPath: 'key' },
+    meta:       { keyPath: 'id' }
+  }
+
+  function ensureDatabase(dbName, version) {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(dbName, version)
+
+      req.onupgradeneeded = e => {
+        const db = e.target.result
+
+        for (const storeName in STORES) {
+          if (!db.objectStoreNames.contains(storeName)) {
+            db.createObjectStore(storeName, STORES[storeName])
+            console.log(`🧱 [${dbName}] store criada: ${storeName}`)
+          }
+        }
+      }
+
+      req.onsuccess = e => {
+        e.target.result.close()
+        resolve()
+      }
+
+      req.onerror = () => reject(req.error)
+    })
+  }
+
+  async function bootstrap() {
+    try {
+      for (const db of DATABASES) {
+        await ensureDatabase(db.name, db.version)
+      }
+      console.log('✅ IndexedDB bootstrap concluído')
+    } catch (err) {
+      console.error('❌ Falha no bootstrap IndexedDB:', err)
+    }
+  }
+
+  bootstrap()
+})()
+</script>
+
 </script>
  
 </body>
