@@ -3278,10 +3278,8 @@ const globalConfig = {
     </script>
 <script>
 /**
- * 🚀 UNIVERSAL IDB <-> SUPABASE SYNC ADAPTER (FIXED)
- * - rc_crm_db como banco canônico
- * - Sync real PC <-> Celular
- * - Seguro ao apagar histórico
+ * 🚀 UNIVERSAL IDB <-> SUPABASE SYNC ADAPTER (ROBUSTO)
+ * Funciona PC ↔ Mobile ↔ Offline
  */
 
 (async function () {
@@ -3291,20 +3289,29 @@ const globalConfig = {
   ================================= */
   const SYNC_TABLE = 'indexeddb_sync';
   const CANONICAL_DB = 'rc_crm_db';
-  const MIRROR_DB = 'RCSistemasDB';
   const DB_VERSION = 1;
 
-  const DEVICE_ID = crypto.randomUUID();
+  const DEVICE_ID = (() => {
+    let id = localStorage.getItem('rc_device_id');
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem('rc_device_id', id);
+    }
+    return id;
+  })();
+
   let isReplicating = false;
   let syncStarted = false;
 
   const STORES = {
     contacts: { keyPath: 'id', autoIncrement: true },
-    events: { keyPath: 'id', autoIncrement: true },
-    movements: { keyPath: 'id', autoIncrement: true },
-    albums: { keyPath: 'id', autoIncrement: true },
-    eventTypes: { keyPath: 'id', autoIncrement: true },
-    customReports: { keyPath: 'id', autoIncrement: true },
+    agenda: { keyPath: 'id', autoIncrement: true },
+    dashboard: { keyPath: 'id', autoIncrement: true },
+    modules: { keyPath: 'id', autoIncrement: true },
+    settings: { keyPath: 'id', autoIncrement: true },
+    financeiro: { keyPath: 'id', autoIncrement: true },
+    funnels: { keyPath: 'id', autoIncrement: true },
+    followups: { keyPath: 'id', autoIncrement: true },
     kv: {}
   };
 
@@ -3328,22 +3335,31 @@ const globalConfig = {
     return data?.session?.user?.id || null;
   }
 
+  async function waitForAuth() {
+    for (let i = 0; i < 20; i++) {
+      const uid = await getUserId();
+      if (uid) return uid;
+      await new Promise(r => setTimeout(r, 300));
+    }
+    return null;
+  }
+
   const parseKey = k =>
     !isNaN(k) && k !== null && k !== '' ? Number(k) : k;
 
   /* ================================
      3. DB BOOTSTRAP
   ================================= */
-  function ensureDatabase(dbName) {
+  function ensureDatabase() {
     return new Promise(resolve => {
-      const req = indexedDB.open(dbName, DB_VERSION);
+      const req = indexedDB.open(CANONICAL_DB, DB_VERSION);
 
       req.onupgradeneeded = e => {
         const db = e.target.result;
         Object.entries(STORES).forEach(([name, cfg]) => {
           if (!db.objectStoreNames.contains(name)) {
             db.createObjectStore(name, cfg);
-            console.warn(`📦 Store criada: ${dbName}.${name}`);
+            console.warn(`📦 Store criada: ${name}`);
           }
         });
       };
@@ -3355,12 +3371,6 @@ const globalConfig = {
 
       req.onerror = () => resolve(false);
     });
-  }
-
-  async function bootstrapDatabases() {
-    await ensureDatabase(CANONICAL_DB);
-    await ensureDatabase(MIRROR_DB);
-    console.log('✅ rc_crm_db e RCSistemasDB garantidos');
   }
 
   /* ================================
@@ -3419,7 +3429,9 @@ const globalConfig = {
   /* ================================
      5. CLOUD → IDB
   ================================= */
-  function applyBatch(records) {
+  async function applyBatch(records) {
+    await ensureDatabase();
+
     const req = indexedDB.open(CANONICAL_DB);
 
     req.onsuccess = e => {
@@ -3439,6 +3451,11 @@ const globalConfig = {
       valid.forEach(r => {
         const store = tx.objectStore(r.store_name);
         const key = parseKey(r.record_key);
+
+        if (r.record_value && typeof r.record_value === 'object') {
+          r.record_value.id = key;
+        }
+
         r.is_deleted
           ? store.delete(key)
           : store.put(r.record_value, key);
@@ -3458,13 +3475,13 @@ const globalConfig = {
   }
 
   /* ================================
-     6. CICLO DE SYNC (GLOBAL)
+     6. CICLO DE SYNC
   ================================= */
-  window.startSyncCycle = async function () {
+  async function startSyncCycle() {
     if (syncStarted) return;
     syncStarted = true;
 
-    const userId = await getUserId();
+    const userId = await waitForAuth();
     if (!userId) {
       syncStarted = false;
       return;
@@ -3472,15 +3489,26 @@ const globalConfig = {
 
     console.log('🔄 Sync iniciado para usuário:', userId);
 
-    await bootstrapDatabases();
+    await ensureDatabase();
+
+    const lastSync =
+      localStorage.getItem('rc_last_sync') || '1970-01-01';
 
     const { data } = await client
       .from(SYNC_TABLE)
       .select('*')
       .eq('user_id', userId)
-      .eq('db_name', CANONICAL_DB);
+      .eq('db_name', CANONICAL_DB)
+      .gt('updated_at', lastSync)
+      .order('updated_at', { ascending: true });
 
-    if (data?.length) applyBatch(data);
+    if (data?.length) {
+      await applyBatch(data);
+      localStorage.setItem(
+        'rc_last_sync',
+        data[data.length - 1].updated_at
+      );
+    }
 
     client.channel('idb-sync-' + userId)
       .on('postgres_changes', {
@@ -3491,26 +3519,26 @@ const globalConfig = {
       }, payload => {
         if (payload.new?.device_id !== DEVICE_ID) {
           applyBatch([payload.new]);
+          localStorage.setItem('rc_last_sync', payload.new.updated_at);
         }
       })
       .subscribe();
-  };
+  }
 
   /* ================================
      7. INIT
   ================================= */
   client.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_IN' && session?.user) {
-      window.startSyncCycle();
+      startSyncCycle();
     }
   });
 
-  if (await getUserId()) {
-    window.startSyncCycle();
-  }
+  startSyncCycle();
 
 })();
 </script>
+
 
 
 
