@@ -3496,20 +3496,38 @@ const globalConfig = {
       .subscribe();
   };
 
-  /* ================================
-     7. INIT
-  ================================= */
-  client.auth.onAuthStateChange((event, session) => {
-    if (event === 'SIGNED_IN' && session?.user) {
-      window.startSyncCycle();
-    }
-  });
+ /* ================================
+   7. INIT (CORRIGIDO)
+================================= */
 
-  if (await getUserId()) {
-    window.startSyncCycle();
+async function fullStartupSync() {
+  const userId = await getUserId();
+  if (!userId) return;
+
+  console.log("🔐 Usuário logado:", userId);
+
+  // GARANTE BANCO ANTES DE QUALQUER SYNC
+  await bootstrapDatabases();
+
+  console.log("📦 Bancos garantidos, iniciando sync...");
+  await startSync();
+}
+
+// expõe globalmente (debug / mobile)
+window.__RC_START_SYNC__ = fullStartupSync;
+
+client.auth.onAuthStateChange(async (evt) => {
+  if (evt === 'SIGNED_IN') {
+    await fullStartupSync();
   }
+});
 
+// fallback (caso já esteja logado)
+(async () => {
+  const uid = await getUserId();
+  if (uid) await fullStartupSync();
 })();
+
 </script>
 
 
