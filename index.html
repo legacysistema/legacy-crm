@@ -2118,8 +2118,8 @@
         // =========================================================================
 
         // --- Configuração e Utilidades do DB (IndexedDB) - INTACTO ---
-        const DB_NAME = 'RCSistemasDB';
-        const DB_VERSION = 5;
+        const DB_NAME = 'lg_crmDB';
+        const DB_VERSION = 1;
 
         class DB {
             constructor() { this.db = null; }
@@ -3012,184 +3012,93 @@
             }
         };
 
-        // --- APP INIT ---
-        const app = {
-            initialized: false,
-            init: async () => {
-                setInterval(() => {
-                    const now = new Date();
-                    document.getElementById('clock').innerText = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-                    document.getElementById('date-display').innerText = now.toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-                }, 1000);
+      // ===============================
+// APP INIT
+// ===============================
+const app = {
+    initialized: false,
 
-                await db.connect();
-                globalConfig.load(); // Carrega configurações globais salvas
+    async init() {
+        this.initClock();
+
+        await db.connect();
+
+        // Configurações globais
+        globalConfig.load();
+
+        // Módulos
+        contactManager.load();
+
+        await albumManager.init();
+        albumManager.load();
+
+        await agendaManager.init();
+        calendarManager.init();
+
+        oppManager.load();
+        stockManager.load();
+        msgManager.init();
+
+        dashboardManager.init();
+
+        this.initialized = true;
+    },
+
+    initClock() {
+        setInterval(() => {
+            const now = new Date();
+
+            document.getElementById('clock').innerText =
+                now.toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+
+            document.getElementById('date-display').innerText =
+                now.toLocaleDateString('pt-BR', {
+                    weekday: 'long',
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric'
+                });
+        }, 1000);
+    },
+
+    nav(tabId) {
+        document
+            .querySelectorAll('.tab-content')
+            .forEach(t => t.classList.remove('active'));
+
+        document
+            .querySelectorAll('nav button')
+            .forEach(b => b.classList.remove('active'));
+
+        document.getElementById(`tab-${tabId}`).classList.add('active');
+        event.currentTarget.classList.add('active');
+
+        switch (tabId) {
+            case 'contacts':
                 contactManager.load();
-                await albumManager.init(); 
-                albumManager.load(); 
-                await agendaManager.init(); 
-                calendarManager.init();
-                oppManager.load();
-                stockManager.load();
-                msgManager.init();
-                dashboardManager.init();
-            },
+                break;
 
-            nav: (tabId) => {
-                document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-                document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
-                
-                document.getElementById(`tab-${tabId}`).classList.add('active');
-                event.currentTarget.classList.add('active');
-                
-                if(tabId === 'contacts') contactManager.load();
-                if(tabId === 'management') albumManager.load();
-                if(tabId === 'agenda') agendaManager.render();
-                if(tabId === 'home') {
-                    calendarManager.render();
-                    dashboardManager.applySettings();
-                }
-            }
-        };
+            case 'management':
+                albumManager.load();
+                break;
 
-        // Removido window.onload direto, o authManager cuida da inicialização
-        // window.onload = app.init;
-        
-/* =====================================================
-   IndexedDB Persistence Layer (CORRIGIDO)
-===================================================== */
+            case 'agenda':
+                agendaManager.render();
+                break;
 
-const RC_DB_NAME = "rc_crm_db";
-const RC_DB_VERSION = 1;
-
-let rcDB = null;
-let rcMemoryCache = {};
-
-/* ---------- INIT ---------- */
-async function dbInit() {
-    return new Promise((resolve, reject) => {
-        const request = indexedDB.open(RC_DB_NAME, RC_DB_VERSION);
-
-        request.onupgradeneeded = (event) => {
-            const db = event.target.result;
-
-            const stores = [
-                "contacts",
-                "agenda",
-                "dashboard",
-                "modules",
-                "settings",
-                "financeiro",
-                "funnels",
-                "followups",
-                "kv"
-            ];
-
-            stores.forEach(store => {
-                if (!db.objectStoreNames.contains(store)) {
-                    db.createObjectStore(
-                        store,
-                        store === "kv"
-                            ? undefined
-                            : { keyPath: "id", autoIncrement: true }
-                    );
-                }
-            });
-        };
-
-        request.onsuccess = () => {
-            rcDB = request.result;
-            resolve(rcDB);
-        };
-
-        request.onerror = () => reject(request.error);
-    });
-}
-
-/* ---------- GARANTIA DE DB ---------- */
-async function ensureDB(store) {
-    if (!rcDB || !rcDB.objectStoreNames.contains(store)) {
-        await indexedDB.deleteDatabase(RC_DB_NAME);
-        rcDB = null;
-        await dbInit();
+            case 'home':
+                calendarManager.render();
+                dashboardManager.applySettings();
+                break;
+        }
     }
-}
+};
 
-/* ---------- UTILITÁRIOS ---------- */
-async function dbSet(store, key, value) {
-    await ensureDB(store);
-
-    return new Promise((resolve, reject) => {
-        const tx = rcDB.transaction(store, "readwrite");
-        const os = tx.objectStore(store);
-        os.put(value, key);
-        tx.oncomplete = () => resolve(true);
-        tx.onerror = () => reject(tx.error);
-    });
-}
-
-async function dbGet(store, key) {
-    await ensureDB(store);
-
-    return new Promise((resolve) => {
-        const tx = rcDB.transaction(store, "readonly");
-        const os = tx.objectStore(store);
-        const req = os.get(key);
-        req.onsuccess = () => resolve(req.result ?? null);
-        req.onerror = () => resolve(null);
-    });
-}
-
-async function dbDelete(store, key) {
-    await ensureDB(store);
-
-    return new Promise((resolve) => {
-        const tx = rcDB.transaction(store, "readwrite");
-        tx.objectStore(store).delete(key);
-        tx.oncomplete = () => resolve(true);
-    });
-}
-
-/* ---------- MIGRAÇÃO AUTOMÁTICA ---------- */
-async function migrateLocalStorage() {
-    for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        const value = localStorage.getItem(key);
-        await dbSet("kv", key, value);
-        rcMemoryCache[key] = value;
-    }
-}
-
-/* ---------- OVERRIDE localStorage ---------- */
-(function overrideLocalStorage() {
-    const originalSetItem = localStorage.setItem;
-    const originalGetItem = localStorage.getItem;
-    const originalRemoveItem = localStorage.removeItem;
-
-    localStorage.setItem = function(key, value) {
-        rcMemoryCache[key] = value;
-        dbSet("kv", key, value).catch(console.error);
-        return originalSetItem.call(this, key, value);
-    };
-
-    localStorage.getItem = function(key) {
-        if (key in rcMemoryCache) return rcMemoryCache[key];
-        return originalGetItem.call(this, key);
-    };
-
-    localStorage.removeItem = function(key) {
-        delete rcMemoryCache[key];
-        dbDelete("kv", key).catch(console.error);
-        return originalRemoveItem.call(this, key);
-    };
-})();
-
-/* ---------- BOOT ---------- */
-(async function () {
-    await dbInit();
-    await migrateLocalStorage();
-    console.log("✔ IndexedDB ativo | localStorage migrado com sucesso");
-})();
+// Inicialização controlada pelo authManager
+// window.onload = app.init;
 
 /* ===============================
    CONFIGURAÇÕES GLOBAIS DO SISTEMA
@@ -3237,45 +3146,47 @@ const globalConfig = {
     }
 };
 
-    function toggleMobileMenu() {
-        const sidebar = document.querySelector('aside');
+function toggleMobileMenu() {
+    const sidebar = document.querySelector('aside');
+    const overlay = document.getElementById('mobile-overlay');
+    const trigger = document.getElementById('mobile-menu-trigger');
+
+    const isOpen = sidebar.classList.contains('open');
+
+    if (isOpen) {
+        sidebar.classList.remove('open');
+        overlay.style.display = 'none';
+        document.body.style.overflow = '';
+        trigger.style.transform = 'rotate(0deg)';
+    } else {
+        sidebar.classList.add('open');
+        overlay.style.display = 'block';
+        document.body.style.overflow = 'hidden';
+        trigger.style.transform = 'rotate(90deg)';
+    }
+}
+
+function showSection(sectionId) {
+    // Exemplo básico de feedback na Tab Bar
+    document.querySelectorAll('.tab-item')
+        .forEach(i => i.classList.remove('active'));
+
+    event.currentTarget.classList.add('active');
+}
+
+// Ajuste fino para evitar que o menu lateral do desktop interfira no mobile no carregamento
+window.addEventListener('resize', () => {
+    if (window.innerWidth > 768) {
+        const aside = document.querySelector('aside');
+        if (aside) aside.classList.remove('open');
+
         const overlay = document.getElementById('mobile-overlay');
-        const trigger = document.getElementById('mobile-menu-trigger');
-        
-        const isOpen = sidebar.classList.contains('open');
-        
-        if (isOpen) {
-            sidebar.classList.remove('open');
-            overlay.style.display = 'none';
-            document.body.style.overflow = '';
-            trigger.style.transform = 'rotate(0deg)';
-        } else {
-            sidebar.classList.add('open');
-            overlay.style.display = 'block';
-            document.body.style.overflow = 'hidden';
-            trigger.style.transform = 'rotate(90deg)';
-        }
-    }
+        if (overlay) overlay.style.display = 'none';
 
-    function showSection(sectionId) {
-        // Exemplo básico de feedback na Tab Bar
-        document.querySelectorAll('.tab-item').forEach(i => i.classList.remove('active'));
-        event.currentTarget.classList.add('active');
+        document.body.style.overflow = '';
     }
-
-    // Ajuste fino para evitar que o menu lateral do desktop interfira no mobile no carregamento
-    window.addEventListener('resize', () => {
-        if (window.innerWidth > 768) {
-            const aside = document.querySelector('aside');
-            if(aside) aside.classList.remove('open');
-            
-            const overlay = document.getElementById('mobile-overlay');
-            if(overlay) overlay.style.display = 'none';
-            
-            document.body.style.overflow = '';
-        }
-    });
-    </script>
+});
+</script>
 <script>
 /**
  * 🚀 UNIVERSAL IDB <-> SUPABASE SYNC ADAPTER (FIXED)
@@ -3289,9 +3200,8 @@ const globalConfig = {
   /* ================================
      1. CONFIG
   ================================= */
-  const SYNC_TABLE = 'indexeddb_sync';
-  const CANONICAL_DB = 'rc_crm_db';
-  const MIRROR_DB = 'RCSistemasDB';
+  const SYNC_TABLE = 'lg_crm_supadb';
+  const CANONICAL_DB = 'lg_crmDB';
   const DB_VERSION = 1;
 
   const DEVICE_ID = crypto.randomUUID();
@@ -3359,8 +3269,7 @@ const globalConfig = {
 
   async function bootstrapDatabases() {
     await ensureDatabase(CANONICAL_DB);
-    await ensureDatabase(MIRROR_DB);
-    console.log('✅ rc_crm_db e RCSistemasDB garantidos');
+       console.log('✅ rc_crm_db e RCSistemasDB garantidos');
   }
 
   /* ================================
@@ -3511,9 +3420,5 @@ const globalConfig = {
 
 })();
 </script>
-
-
-
- 
 </body>
 </html>
