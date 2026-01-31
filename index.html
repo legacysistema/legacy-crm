@@ -3188,9 +3188,10 @@ window.addEventListener('resize', () => {
 </script>
 <script>
 /**
- * 🚀 UNIVERSAL IDB SYNC - FIXED (ANTI-ZOMBIE DATA)
- * - Correção: Persistência de DeviceID (Evita auto-download após F5).
- * - Correção: Force Delete (Deleta do disco mesmo se não estiver no Cache).
+ * 🚀 UNIVERSAL IDB SYNC - OPTIMIZED V2 (INCREMENTAL)
+ * - Mantém: Anti-Zombie, Anti-Echo, Force Delete.
+ * - Novo: Sincronização Incremental (baixa apenas o delta).
+ * - Novo: Ordenação temporal para consistência.
  */
 (function () {
     // ==========================================================
@@ -3198,9 +3199,9 @@ window.addEventListener('resize', () => {
     // ==========================================================
     const SYNC_TABLE = 'lg_crm_supadb';
     const CANONICAL_DB = 'lg_crmDB';
-    
-    // FIX 1: Mantém a identidade da aba mesmo após refresh (SessionStorage)
-    // Isso impede que a aba baixe de volta um dado que ela mesma acabou de deletar
+    const SYNC_KEY_STORAGE = 'crm_last_sync_iso'; // Chave para guardar o timestamp
+
+    // FIX 1: Identidade da aba (Anti-Loop)
     let storedId = sessionStorage.getItem('sync_device_id');
     if (!storedId) {
         storedId = crypto.randomUUID();
@@ -3231,10 +3232,13 @@ window.addEventListener('resize', () => {
     }
 
     function generateSignature(value) {
-        // Garante que null/undefined sejam tratados iguais
         if (value === null || value === undefined) return 'null';
         return JSON.stringify(value);
     }
+
+    // Gerenciamento do Timestamp de Sincronização
+    const getLastSync = () => localStorage.getItem(SYNC_KEY_STORAGE) || '1970-01-01T00:00:00.000Z';
+    const setLastSync = (iso) => localStorage.setItem(SYNC_KEY_STORAGE, iso);
 
     // ==========================================================
     // 3. INTERCEPTAÇÃO REAL-TIME (IndexDB -> Supabase)
@@ -3254,15 +3258,14 @@ window.addEventListener('resize', () => {
 
         const cacheKey = `${storeName}-${key}`;
         
-        // Atualiza cache local imediatamente
+        // Atualiza cache local
         if (method === 'delete') {
             syncCache.delete(cacheKey);
         } else {
             syncCache.set(cacheKey, generateSignature(value));
         }
 
-        // Envia para Supabase
-        // FIX: Tratamento de erro silencioso para evitar travar a UI
+        // Upload imediato (Mantém o Real-Time na origem)
         client.from(SYNC_TABLE).upsert({
             user_id: userId,
             db_name: CANONICAL_DB,
@@ -3299,7 +3302,7 @@ window.addEventListener('resize', () => {
         return req;
     };
 
-    console.log('🪤 Sistema de Sync Híbrido Ativado (v2 Anti-Zombie)');
+    console.log('⚡ Sistema de Sync Incremental Ativado (Otimizado)');
 
     // ==========================================================
     // 4. SMART UPLOAD LOOP (PC -> CLOUD)
@@ -3332,7 +3335,6 @@ window.addEventListener('resize', () => {
                         const cacheKey = `${storeName}-${key}`;
                         const currentSig = generateSignature(item);
 
-                        // Só sobe se mudou em relação ao que sabemos
                         if (syncCache.get(cacheKey) !== currentSig) {
                             changedRecords.push({
                                 user_id: userId,
@@ -3349,7 +3351,6 @@ window.addEventListener('resize', () => {
                     });
 
                     if (changedRecords.length > 0) {
-                        console.log(`📤 Upload Batch: ${changedRecords.length} itens`);
                         await client.from(SYNC_TABLE).upsert(changedRecords, { 
                             onConflict: 'user_id,db_name,store_name,record_key' 
                         });
@@ -3360,85 +3361,102 @@ window.addEventListener('resize', () => {
     }
 
     // ==========================================================
-    // 5. SMART DOWNLOAD LOOP (CLOUD -> PC)
+    // 5. SMART DOWNLOAD LOOP (CLOUD -> PC) - OTIMIZADO
     // ==========================================================
     async function smartDownloadLoop() {
         const userId = await getUserId();
         const client = getClient();
         if (!userId || !client) return;
 
-        const { data, error } = await client
-            .from(SYNC_TABLE)
-            .select('*')
-            .eq('user_id', userId)
-            .eq('db_name', CANONICAL_DB);
+        // Verifica se é necessário um "Full Sync" (caso o banco local esteja vazio)
+        // Isso previne que o lastSync bloqueie dados se o usuário limpou o cache
+        let lastSyncTimestamp = getLastSync();
+        
+        // Verifica se o DB local existe e tem dados (verificação simples)
+        // Se estiver zerado, forçamos lastSync para época 0
+        const dbCheckReq = indexedDB.open(CANONICAL_DB);
+        dbCheckReq.onsuccess = async (ev) => {
+            const db = ev.target.result;
+            // Se não houver stores ou versão antiga, assume full sync
+            if(db.objectStoreNames.length === 0) lastSyncTimestamp = '1970-01-01T00:00:00.000Z';
 
-        if (error || !data || !data.length) return;
+            // 🚀 QUERY OTIMIZADA: Baixa apenas o DELTA (Diferença)
+            const { data, error } = await client
+                .from(SYNC_TABLE)
+                .select('*')
+                .eq('user_id', userId)
+                .eq('db_name', CANONICAL_DB)
+                .gt('updated_at', lastSyncTimestamp) // Apenas dados mais novos que a última sync
+                .order('updated_at', { ascending: true }); // Processa na ordem dos fatos
 
-        const req = indexedDB.open(CANONICAL_DB);
-        req.onsuccess = (e) => {
-            const db = e.target.result;
-            const localStores = Array.from(db.objectStoreNames);
-            
-            const validRecords = data.filter(r => localStores.includes(r.store_name));
-            if (!validRecords.length) return;
+            if (error || !data || !data.length) return;
 
-            const tx = db.transaction([...new Set(validRecords.map(r => r.store_name))], 'readwrite');
-            isReplicating = true;
-
-            let writes = 0;
-
-            validRecords.forEach(r => {
-                // ANTI-ECHO: Se o dado veio deste mesmo DEVICE_ID, ignoramos.
-                // Como agora usamos sessionStorage, isso persiste após refresh.
-                if (r.device_id === DEVICE_ID) return;
-
-                const store = tx.objectStore(r.store_name);
-                // Converte chave numérica se necessário
-                const key = !isNaN(r.record_key) ? Number(r.record_key) : r.record_key;
-                const cacheKey = `${r.store_name}-${r.record_key}`;
+            const req = indexedDB.open(CANONICAL_DB);
+            req.onsuccess = (e) => {
+                const db = e.target.result;
+                const localStores = Array.from(db.objectStoreNames);
+                const validRecords = data.filter(r => localStores.includes(r.store_name));
                 
-                // LÓGICA DE DELETE (CORRIGIDA)
-                if (r.is_deleted) {
-                    // FIX: Deleta incondicionalmente. Se não existir, não dá erro.
-                    // Antes verificávamos o cache, o que impedia deletes em sessões novas.
-                    store.delete(key);
-                    
-                    if (syncCache.has(cacheKey)) {
-                        syncCache.delete(cacheKey);
-                        writes++;
-                    }
+                if (!validRecords.length) {
+                    // Se baixou dados mas não são válidos localmente, atualiza o timestamp para não baixar de novo
+                    const maxTime = data[data.length - 1].updated_at;
+                    setLastSync(maxTime);
                     return;
                 }
 
-                // LÓGICA DE UPDATE/INSERT
-                const incomingSig = generateSignature(r.record_value);
-                const localSig = syncCache.get(cacheKey);
+                const tx = db.transaction([...new Set(validRecords.map(r => r.store_name))], 'readwrite');
+                isReplicating = true;
+                let writes = 0;
+                let latestUpdateProcessed = lastSyncTimestamp;
 
-                if (incomingSig === localSig) {
-                    return; 
-                }
+                validRecords.forEach(r => {
+                    // ANTI-ECHO: Ignora alterações feitas por este próprio dispositivo
+                    if (r.device_id === DEVICE_ID) {
+                        // Mesmo ignorando, atualizamos o timestamp para avançar o cursor
+                        if (r.updated_at > latestUpdateProcessed) latestUpdateProcessed = r.updated_at;
+                        return;
+                    }
 
-                // Atualiza IDB
-                const val = r.record_value;
-                if (store.keyPath && val && typeof val === 'object') {
-                    // Se a store usa keyPath inline, injetamos a chave se necessário
-                    if (!val[store.keyPath]) val[store.keyPath] = key;
-                    store.put(val);
-                } else {
-                    store.put(val, key);
-                }
+                    const store = tx.objectStore(r.store_name);
+                    const key = !isNaN(r.record_key) ? Number(r.record_key) : r.record_key;
+                    const cacheKey = `${r.store_name}-${r.record_key}`;
+                    
+                    // DELETE REMOTO
+                    if (r.is_deleted) {
+                        store.delete(key);
+                        if (syncCache.has(cacheKey)) {
+                            syncCache.delete(cacheKey);
+                            writes++;
+                        }
+                    } 
+                    // UPDATE/INSERT REMOTO
+                    else {
+                        const val = r.record_value;
+                        if (store.keyPath && val && typeof val === 'object') {
+                            if (!val[store.keyPath]) val[store.keyPath] = key;
+                            store.put(val);
+                        } else {
+                            store.put(val, key);
+                        }
+                        
+                        // Atualiza cache para não reenviar
+                        syncCache.set(cacheKey, generateSignature(r.record_value));
+                        writes++;
+                    }
+
+                    // Rastreia o timestamp mais recente processado
+                    if (r.updated_at > latestUpdateProcessed) latestUpdateProcessed = r.updated_at;
+                });
+
+                tx.oncomplete = () => {
+                    isReplicating = false;
+                    // Salva o novo checkpoint de tempo
+                    setLastSync(latestUpdateProcessed);
+                    if (writes > 0) console.log(`📥 Sync Incremental: ${writes} atualizações aplicadas.`);
+                };
                 
-                syncCache.set(cacheKey, incomingSig);
-                writes++;
-            });
-
-            tx.oncomplete = () => {
-                isReplicating = false;
-                if (writes > 0) console.log(`📥 Download Sync: ${writes} alterações aplicadas.`);
+                tx.onerror = () => isReplicating = false;
             };
-            
-            tx.onerror = () => isReplicating = false;
         };
     }
 
@@ -3452,26 +3470,29 @@ window.addEventListener('resize', () => {
         console.log('✅ Serviço de Sync Iniciado para:', userId);
         const client = getClient();
 
+        // Escuta Realtime (Gatilho rápido)
         client.channel('global-sync-live')
             .on('postgres_changes', { 
                 event: '*', schema: 'public', table: SYNC_TABLE, filter: `user_id=eq.${userId}` 
             }, payload => {
-                // Só dispara download se o evento veio de OUTRO device
+                // Se receber notificação de OUTRO device, aciona o download incremental
                 if (payload.new && payload.new.device_id !== DEVICE_ID) {
-                    smartDownloadLoop();
+                    // Pequeno delay para garantir consistência no servidor
+                    setTimeout(smartDownloadLoop, 200);
                 }
             })
             .subscribe();
 
-        // Ordem estratégica: Carrega Cache Local -> Baixa Nuvem -> Inicia Loop
+        // Ciclo inicial e periódico
         await smartUploadLoop(); 
-        setTimeout(smartDownloadLoop, 500); // Pequeno delay para garantir que o Upload populou o cache
+        setTimeout(smartDownloadLoop, 500);
 
         if (syncInterval) clearInterval(syncInterval);
+        // Intervalo relaxado para 15s pois temos Realtime
         syncInterval = setInterval(async () => {
             await smartUploadLoop();
             await smartDownloadLoop();
-        }, 10000);
+        }, 15000);
     }
 
     waitForSupabase().then(client => {
