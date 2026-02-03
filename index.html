@@ -2118,7 +2118,7 @@ window.supabaseClient = supabase.createClient(
 
         // --- Configuração e Utilidades do DB (IndexedDB) - INTACTO ---
         const DB_NAME = 'lg_crmDB';
-        const DB_VERSION = 1;
+        const DB_VERSION = 7;
 
         class DB {
             constructor() { this.db = null; }
@@ -2141,7 +2141,7 @@ window.supabaseClient = supabase.createClient(
                     };
                     request.onsuccess = (e) => {
                         this.db = e.target.result;
-                        console.log("DB Conectado");
+                        console.log(".");
                         resolve(this.db);
                     };
                     request.onerror = (e) => reject(e);
@@ -3187,20 +3187,12 @@ window.addEventListener('resize', () => {
 });
 </script>
 <script>
-/**
- * 🚀 UNIVERSAL IDB SYNC - FIXED (ANTI-ZOMBIE DATA)
- * - Correção: Persistência de DeviceID (Evita auto-download após F5).
- * - Correção: Force Delete (Deleta do disco mesmo se não estiver no Cache).
- */
+
 (function () {
-    // ==========================================================
-    // 1. CONFIGURAÇÕES & CONSTANTES
-    // ==========================================================
+
     const SYNC_TABLE = 'lg_crm_supadb';
     const CANONICAL_DB = 'lg_crmDB';
-    
-    // FIX 1: Mantém a identidade da aba mesmo após refresh (SessionStorage)
-    // Isso impede que a aba baixe de volta um dado que ela mesma acabou de deletar
+  
     let storedId = sessionStorage.getItem('sync_device_id');
     if (!storedId) {
         storedId = crypto.randomUUID();
@@ -3211,12 +3203,9 @@ window.addEventListener('resize', () => {
     let isReplicating = false; 
     let syncInterval = null;
 
-    // 🧠 CACHE INTELIGENTE
+  
     const syncCache = new Map();
 
-    // ==========================================================
-    // 2. UTILITÁRIOS
-    // ==========================================================
     const getClient = () => window.supabaseClient || window.supabase;
 
     const waitForSupabase = () => new Promise(resolve => {
@@ -3236,9 +3225,6 @@ window.addEventListener('resize', () => {
         return JSON.stringify(value);
     }
 
-    // ==========================================================
-    // 3. INTERCEPTAÇÃO REAL-TIME (IndexDB -> Supabase)
-    // ==========================================================
     const original = {
         put: IDBObjectStore.prototype.put,
         add: IDBObjectStore.prototype.add,
@@ -3261,8 +3247,6 @@ window.addEventListener('resize', () => {
             syncCache.set(cacheKey, generateSignature(value));
         }
 
-        // Envia para Supabase
-        // FIX: Tratamento de erro silencioso para evitar travar a UI
         client.from(SYNC_TABLE).upsert({
             user_id: userId,
             db_name: CANONICAL_DB,
@@ -3299,11 +3283,8 @@ window.addEventListener('resize', () => {
         return req;
     };
 
-    console.log('🪤 Sistema de Sync Híbrido Ativado (v2 Anti-Zombie)');
+    console.log(' .)');
 
-    // ==========================================================
-    // 4. SMART UPLOAD LOOP (PC -> CLOUD)
-    // ==========================================================
     async function smartUploadLoop() {
         const userId = await getUserId();
         const client = getClient();
@@ -3332,7 +3313,7 @@ window.addEventListener('resize', () => {
                         const cacheKey = `${storeName}-${key}`;
                         const currentSig = generateSignature(item);
 
-                        // Só sobe se mudou em relação ao que sabemos
+                       
                         if (syncCache.get(cacheKey) !== currentSig) {
                             changedRecords.push({
                                 user_id: userId,
@@ -3349,7 +3330,7 @@ window.addEventListener('resize', () => {
                     });
 
                     if (changedRecords.length > 0) {
-                        console.log(`📤 Upload Batch: ${changedRecords.length} itens`);
+                        console.log(`.: ${changedRecords.length} itens`);
                         await client.from(SYNC_TABLE).upsert(changedRecords, { 
                             onConflict: 'user_id,db_name,store_name,record_key' 
                         });
@@ -3359,9 +3340,6 @@ window.addEventListener('resize', () => {
         };
     }
 
-    // ==========================================================
-    // 5. SMART DOWNLOAD LOOP (CLOUD -> PC)
-    // ==========================================================
     async function smartDownloadLoop() {
         const userId = await getUserId();
         const client = getClient();
@@ -3389,19 +3367,17 @@ window.addEventListener('resize', () => {
             let writes = 0;
 
             validRecords.forEach(r => {
-                // ANTI-ECHO: Se o dado veio deste mesmo DEVICE_ID, ignoramos.
-                // Como agora usamos sessionStorage, isso persiste após refresh.
+               
                 if (r.device_id === DEVICE_ID) return;
 
                 const store = tx.objectStore(r.store_name);
-                // Converte chave numérica se necessário
+               
                 const key = !isNaN(r.record_key) ? Number(r.record_key) : r.record_key;
                 const cacheKey = `${r.store_name}-${r.record_key}`;
                 
-                // LÓGICA DE DELETE (CORRIGIDA)
+                
                 if (r.is_deleted) {
-                    // FIX: Deleta incondicionalmente. Se não existir, não dá erro.
-                    // Antes verificávamos o cache, o que impedia deletes em sessões novas.
+                   
                     store.delete(key);
                     
                     if (syncCache.has(cacheKey)) {
@@ -3411,7 +3387,7 @@ window.addEventListener('resize', () => {
                     return;
                 }
 
-                // LÓGICA DE UPDATE/INSERT
+                
                 const incomingSig = generateSignature(r.record_value);
                 const localSig = syncCache.get(cacheKey);
 
@@ -3419,7 +3395,7 @@ window.addEventListener('resize', () => {
                     return; 
                 }
 
-                // Atualiza IDB
+                
                 const val = r.record_value;
                 if (store.keyPath && val && typeof val === 'object') {
                     // Se a store usa keyPath inline, injetamos a chave se necessário
@@ -3442,14 +3418,11 @@ window.addEventListener('resize', () => {
         };
     }
 
-    // ==========================================================
-    // 6. INICIALIZAÇÃO
-    // ==========================================================
-    async function startService() {
+       async function startService() {
         const userId = await getUserId();
         if (!userId) return;
 
-        console.log('✅ Serviço de Sync Iniciado para:', userId);
+        console.log('. ', userId);
         const client = getClient();
 
         client.channel('global-sync-live')
@@ -3463,7 +3436,7 @@ window.addEventListener('resize', () => {
             })
             .subscribe();
 
-        // Ordem estratégica: Carrega Cache Local -> Baixa Nuvem -> Inicia Loop
+      
         await smartUploadLoop(); 
         setTimeout(smartDownloadLoop, 500); // Pequeno delay para garantir que o Upload populou o cache
 
@@ -3483,5 +3456,6 @@ window.addEventListener('resize', () => {
 
 })();
 </script>
+
 </body>
 </html>
